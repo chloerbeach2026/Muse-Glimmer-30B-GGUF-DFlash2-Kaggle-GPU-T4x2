@@ -191,7 +191,8 @@ class ProxyServer(http.server.ThreadingHTTPServer):
     def __init__(
         self, address, handler_cls, *, token: str, backend_host: str, backend_port: int,
         timeout: float, max_request_bytes: int, idle_timeout: float, hard_deadline: float,
-        telemetry_file: str | None = None,
+        telemetry_file: str | None = None, queue_size: int = P.MAX_QUEUED_INFERENCE,
+        queue_wait_seconds: float = P.QUEUE_WAIT_SECONDS,
     ):
         super().__init__(address, handler_cls)
         self.auth_token = token
@@ -201,7 +202,9 @@ class ProxyServer(http.server.ThreadingHTTPServer):
         self.max_request_bytes = max_request_bytes
         self.idle_timeout = idle_timeout
         self.hard_deadline = hard_deadline
-        self.admission = P.AdmissionSlot()
+        self.queue_size = max(0, int(queue_size))
+        self.queue_wait_seconds = max(0.0, float(queue_wait_seconds))
+        self.admission = P.AdmissionSlot(max_queued=self.queue_size, wait_seconds=self.queue_wait_seconds)
         self.rate_bucket = P.TokenBucket(capacity=P.RATE_CAPACITY, refill_per_sec=P.RATE_REFILL_PER_SEC)
         self.telemetry = DemoTelemetry(telemetry_file=telemetry_file)
 
@@ -342,7 +345,7 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
         inference = P.is_inference_route(self.command, target.path)
 
         if inference:
-            if not self.server.admission.try_acquire():
+            if not self.server.admission.try_acquire(wait_seconds=self.server.queue_wait_seconds):
                 self.server.telemetry.note_busy(request_id)
                 self._reject_json(429, P.build_error_body(
                     "Another inference is in progress; the demo accepts one request at a time.",
@@ -551,6 +554,8 @@ def main() -> int:
     ap.add_argument("--backend-port", type=int, default=8088)
     ap.add_argument("--backend-timeout", type=float, default=P.CONNECT_TIMEOUT)
     ap.add_argument("--max-request-bytes", type=int, default=P.MAX_BODY_BYTES)
+    ap.add_argument("--queue-size", type=int, default=P.MAX_QUEUED_INFERENCE)
+    ap.add_argument("--queue-wait-seconds", type=float, default=P.QUEUE_WAIT_SECONDS)
     ap.add_argument("--idle-timeout", type=float, default=P.IDLE_TIMEOUT)
     ap.add_argument("--hard-deadline", type=float, default=P.HARD_DEADLINE)
     ap.add_argument("--telemetry-file", default=None)
@@ -572,13 +577,17 @@ def main() -> int:
     if args.max_request_bytes < 1:
         print("ERROR: --max-request-bytes must be >= 1", file=sys.stderr)
         return 24
+    if args.queue_size < 0 or args.queue_wait_seconds < 0:
+        print("ERROR: queue size and wait time must be non-negative", file=sys.stderr)
+        return 25
 
     server = ProxyServer(
         (args.listen_host, args.listen_port), AuthProxyHandler,
         token=token, backend_host=args.backend_host, backend_port=args.backend_port,
         timeout=max(0.1, args.backend_timeout), max_request_bytes=args.max_request_bytes,
         idle_timeout=max(0.1, args.idle_timeout), hard_deadline=max(0.1, args.hard_deadline),
-        telemetry_file=args.telemetry_file,
+        telemetry_file=args.telemetry_file, queue_size=args.queue_size,
+        queue_wait_seconds=args.queue_wait_seconds,
     )
     print(f"Muse auth proxy READY http://{args.listen_host}:{args.listen_port} -> http://{args.backend_host}:{args.backend_port}", flush=True)
     try:
