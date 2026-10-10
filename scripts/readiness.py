@@ -396,6 +396,8 @@ def assess(facts: dict) -> dict:
     # target model
     target = facts.get("target", {})
     t_status, t_blocker, t_warning = _model_status("TARGET", target)
+    if t_status == "ERROR":
+        error = True
     if t_blocker:
         blockers.append(t_blocker)
     if t_warning:
@@ -404,6 +406,8 @@ def assess(facts: dict) -> dict:
     # draft model
     draft = facts.get("draft", {})
     d_status, d_blocker, d_warning = _model_status("DFLASH", draft)
+    if d_status == "ERROR":
+        error = True
     if d_blocker:
         blockers.append(d_blocker)
     if d_warning:

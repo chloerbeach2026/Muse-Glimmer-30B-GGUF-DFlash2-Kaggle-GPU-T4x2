@@ -3,7 +3,7 @@
 
 ![Release](https://img.shields.io/badge/release-v1.0.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![CI](https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/chloerbeach2026/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/actions/workflows/ci.yml/badge.svg)
 ![Kaggle T4x2](https://img.shields.io/badge/kaggle-T4x2-orange)
 ![NVIDIA T4 x2](https://img.shields.io/badge/nvidia-T4%20x2-lightgray)
 ![llama.cpp](https://img.shields.io/badge/runtime-llama.cpp-606060)
@@ -200,29 +200,17 @@ find /kaggle/input -type f -name 'Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf' -print -
 
 For a guided production-style Kaggle run, use [`notebooks/kaggle-production.ipynb`](notebooks/kaggle-production.ipynb).
 
-The notebook validates the T4 x2 hardware gate, attached model/runtime inputs, frozen `v1.0.0` source identity, secure Bearer-token handling, real non-stream and SSE generation, optional Quick Tunnel transport, evidence, and cleanup.
+The notebook validates the T4 x2 hardware gate, attached model/runtime inputs, this fork's `main` commit identity, secure Bearer-token handling, real non-stream and SSE generation, optional Quick Tunnel transport, evidence, and cleanup.
 
 See [`docs/KAGGLE_PRODUCTION.md`](docs/KAGGLE_PRODUCTION.md) for the operator contract and release qualification gates.
 
 ## Publication evidence
 
-The successful real Kaggle T4 x2 publication run is preserved separately from
-the release-build/export evidence:
+The successful Kaggle T4 x2 run described in the historical publication record belongs to the original upstream `v1.0.0` source. It does **not** qualify this fork's current code. This fork needs a fresh Kaggle run before it can publish its own verified evidence bundle.
 
-- [publication evidence ZIP](https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/releases/download/v1.0.0/muse-glimmer-30b-v1.0.0-publication-evidence.zip)
-- [ZIP SHA-256 sidecar](https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/releases/download/v1.0.0/muse-glimmer-30b-v1.0.0-publication-evidence.zip.sha256)
-- [reviewer summary](https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/releases/download/v1.0.0/muse-glimmer-30b-v1.0.0-review-summary.txt)
+- [Releases for this fork](https://github.com/chloerbeach2026/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/releases) (publish only evidence generated from a fresh run of this fork)
 
-Outer ZIP SHA-256: `131d1bfcd4365e5c03c07feec3b969e558bbd2f846b65a416454e80a81cf2ca6`.
-
-The bundle proves the recorded T4 x2 run, model hashes, dual-GPU model
-residency, authenticated API behavior, non-stream + SSE inference, semantic
-sanity, observed DFlash2 speculative activity, secret scanning, and cleanup.
-It does not claim DFlash2 speedup versus a matched baseline.
-
-See [`docs/PUBLICATION_EVIDENCE.md`](docs/PUBLICATION_EVIDENCE.md) for the
-evidence chain, verification commands, claim boundary, and the distinction
-between the clean reusable notebook source and the executed run artifact.
+See [the publication evidence documentation](docs/PUBLICATION_EVIDENCE.md) for the historical claim boundary and verification process.
 
 ## Kaggle T4x2 quick start
 
@@ -231,7 +219,7 @@ between the clean reusable notebook source and the executed run artifact.
 # 2) Attach the exact Kaggle resources/variations from "Model files".
 # 3) Clone this repository into /kaggle/working.
 
-git clone https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2.git
+git clone https://github.com/chloerbeach2026/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2.git
 cd Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2
 
 # 4) Verify the notebook is ready (read-only; no GPU/model required).
@@ -456,6 +444,7 @@ See [SECURITY.md](SECURITY.md). Highlights:
 - The gateway **never** logs or persists bearer tokens, prompts, completions,
   reasoning, or raw request bodies; telemetry carries only counters.
 - Models and runtime are pinned by SHA-256 / commit and re-verified on start.
+- The production notebook pins Cloudflare `cloudflared` to release `2026.10.0` and verifies the official SHA-256 before execution.
 - Loopback-only backend: external access is always through the authenticated
   gateway.
 - A public tunnel publishes the gateway to the Internet — that is your
@@ -475,7 +464,7 @@ See [SECURITY.md](SECURITY.md). Highlights:
 
 ## Reproducibility
 
-- **Frozen source:** every commit-tree is covered by `SOURCE_MANIFEST.sha256`
+- **Source integrity:** runtime source files are covered by `SOURCE_MANIFEST.sha256`
   (see `scripts/source_manifest.py`); runtime integrity is enforced in strict
   mode at startup.
 - **Deterministic tests (CPU-only, no GPU/model/tunnel/secrets):**

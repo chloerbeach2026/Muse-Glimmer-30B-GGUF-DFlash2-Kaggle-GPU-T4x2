@@ -271,8 +271,27 @@ def main() -> int:
             st, _, data = request(pport2b, "POST", "/v1/chat/completions", body=json.dumps(badt).encode(),
                                   headers={"Authorization": AUTH, "Content-Type": "application/json"})
             check("max_tokens out of range -> 400 muse_invalid_max_tokens", st == 400 and b"muse_invalid_max_tokens" in data)
+            snap_validation = json.loads(Path(tfile2b).read_text()) if Path(tfile2b).exists() else {}
+            check("payload validation errors counted separately from backend errors",
+                  snap_validation.get("validation_error_total") == 2
+                  and snap_validation.get("backend_error_total") == 0
+                  and snap_validation.get("inference_admitted_total", 0) == 0)
         finally:
             close_proxy(server2b, proxy2b)
+
+        # Empty bodies are checked in isolation because the test bucket's cap is two.
+        server2c, proxy2c, pport2c, tfile2c = fresh_proxy(td)
+        try:
+            st, _, data = request(pport2c, "POST", "/v1/chat/completions", body=None,
+                                  headers={"Authorization": AUTH, "Content-Type": "application/json"})
+            check("empty inference body -> 400", st == 400 and b"muse_" in data)
+            snap_empty = json.loads(Path(tfile2c).read_text()) if Path(tfile2c).exists() else {}
+            check("empty body is validation error, not a backend failure",
+                  snap_empty.get("validation_error_total") == 1
+                  and snap_empty.get("backend_error_total") == 0
+                  and snap_empty.get("inference_admitted_total", 0) == 0)
+        finally:
+            close_proxy(server2c, proxy2c)
 
         # --- telemetry reflects admitted inference on a fresh proxy ---
         server3, proxy3, pport3, tfile3 = fresh_proxy(td)
@@ -302,6 +321,11 @@ def main() -> int:
             elapsed = time.monotonic() - t0
             check("hanging stream fails closed via timeout", st in (500, 502) or elapsed < 8)
             check("hanging stream did not hang past hard deadline", elapsed < 6.0)
+            snap_timeout = json.loads(Path(tfile_slow).read_text()) if Path(tfile_slow).exists() else {}
+            check("timeout finish class remains timeout after completion cleanup",
+                  snap_timeout.get("timeout_total", 0) >= 1
+                  and snap_timeout.get("last_finish_class") == "timeout"
+                  and snap_timeout.get("active_inference") is False)
         finally:
             proxy_slow.terminate(); slow.shutdown(); slow.server_close()
 

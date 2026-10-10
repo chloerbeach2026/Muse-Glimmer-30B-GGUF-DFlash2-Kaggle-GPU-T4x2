@@ -28,12 +28,14 @@ jobs:
             git fetch origin "$PR_HEAD_SHA"
             python3 .github/scripts/check_commit_messages.py --range "origin/$BASE_REF..$PR_HEAD_SHA" --skip-identity
           else
-            python3 .github/scripts/check_commit_messages.py --range HEAD
+            python3 .github/scripts/check_commit_messages.py --range HEAD --skip-identity
           fi
       - name: Run deterministic contract suite (CPU-only)
         run: ./demo-smoke.sh
       - name: Run public contract unit tests
         run: python3 tests/test_public_contract.py
+      - name: Run readiness assessment regression tests
+        run: python3 tests/test_readiness.py
       - name: Validate shell syntax
         run: |
           for f in serve.sh expose.sh external.sh readiness.sh doctor.sh release-export.sh demo-smoke.sh package-llama-runtime.sh scripts/*.sh; do bash -n "$f"; done

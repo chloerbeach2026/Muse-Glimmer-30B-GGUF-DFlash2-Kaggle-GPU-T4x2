@@ -35,7 +35,7 @@ MANDATORY = [
 ]
 
 LICENSE_COPYRIGHT = "Copyright (c) 2026 Đăng Khoa"
-CODEOWNER = "@dangkhoa2016"
+CODEOWNER = "@chloerbeach2026"
 
 ECOSYSTEM_MANIFESTS: dict[str, tuple[str, ...]] = {
     "pip": ("requirements.txt", "setup.py", "setup.cfg", "pyproject.toml", "Pipfile"),

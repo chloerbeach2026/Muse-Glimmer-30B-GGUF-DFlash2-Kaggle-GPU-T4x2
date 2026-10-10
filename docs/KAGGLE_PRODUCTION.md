@@ -5,7 +5,7 @@ The canonical production notebook for the public `v1.0.0` release is:
 
 `notebooks/kaggle-production.ipynb`
 
-It is an operator-focused Kaggle NVIDIA T4 x2 notebook that uses the frozen public repository as the runtime source rather than reimplementing the serving stack.
+It is an operator-focused Kaggle NVIDIA T4 x2 notebook that clones this fork's `main` branch, pins the exact resolved commit SHA for the run, and uses that checkout rather than reimplementing the serving stack.
 
 ## What the notebook validates
 
@@ -13,7 +13,7 @@ A complete run validates:
 
 - exactly two NVIDIA T4 GPUs with the required visible VRAM;
 - the exact target GGUF, DFlash2 draft GGUF, and prebuilt llama.cpp runtime inputs;
-- the frozen `v1.0.0` Git source identity and `SOURCE_MANIFEST.sha256`;
+- the resolved fork commit SHA, `VERSION=1.0.0`, a clean worktree, and `SOURCE_MANIFEST.sha256`;
 - full SHA-256 verification of both target and DFlash2 GGUF files;
 - successful model-memory residency on both T4 GPUs after backend load;
 - one deterministic semantic sanity request in addition to deployment prompts;
@@ -24,6 +24,7 @@ A complete run validates:
 - one real non-streaming generation with visible assistant content;
 - one real SSE generation with visible streamed content, a terminal finish reason, and `[DONE]`;
 - optional Cloudflare Quick Tunnel transport independently from local model/runtime health;
+- Cloudflare `cloudflared` pinned to release `2026.10.0` and accepted only when the official Linux AMD64 SHA-256 matches before execution;
 - deterministic evidence and cleanup, including deletion of any notebook-generated token.
 
 ## Runtime boundaries
@@ -32,7 +33,7 @@ The notebook is a production-style reference workflow, not a managed hosted serv
 
 The local model/runtime qualification is authoritative for the serving core. Quick Tunnel is an optional transport layer and is evaluated separately so external DNS or tunnel instability does not erase a valid local inference result.
 
-The notebook keeps the public request cap at `max_tokens=512`, uses the model-native request template setting `reasoning_strength=low`, and applies a notebook-owned auth-proxy backend response timeout of 120 seconds without changing the frozen repository source tree.
+The notebook keeps the public request cap at `max_tokens=512`, uses the model-native request template setting `reasoning_strength=low`, and applies a notebook-owned auth-proxy backend response timeout of 120 seconds without modifying the fetched fork checkout.
 
 ## Required Kaggle inputs
 
@@ -76,7 +77,7 @@ A successful release qualification should include:
 ```text
 KAGGLE_T4X2_GATE=PASS
 ATTACHED_INPUT_GATE=PASS
-FROZEN_SOURCE_IDENTITY=PASS
+FORK_SOURCE_IDENTITY=PASS
 CANONICAL_ENVIRONMENT=PASS
 MODEL_SHA256_GATE=PASS
 DUAL_GPU_MEMORY_RESIDENCY=PASS

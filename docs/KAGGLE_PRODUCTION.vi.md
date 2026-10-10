@@ -13,7 +13,7 @@ Một lần chạy đầy đủ xác minh:
 
 - đúng hai GPU NVIDIA T4 với lượng VRAM khả dụng theo yêu cầu;
 - exact target GGUF, DFlash2 draft GGUF và prebuilt llama.cpp runtime inputs;
-- frozen Git source identity của `v1.0.0` và `SOURCE_MANIFEST.sha256`;
+- SHA commit đã resolve của fork, `VERSION=1.0.0`, worktree sạch và `SOURCE_MANIFEST.sha256`;
 - full SHA-256 verification cho cả target và DFlash2 GGUF;
 - model-memory residency thành công trên cả hai GPU T4 sau khi backend load;
 - một deterministic semantic sanity request ngoài các deployment prompt;
@@ -24,6 +24,7 @@ Một lần chạy đầy đủ xác minh:
 - một real non-streaming generation có visible assistant content;
 - một real SSE generation có visible streamed content, finish reason cuối và `[DONE]`;
 - Cloudflare Quick Tunnel tùy chọn được đánh giá độc lập với sức khỏe model/runtime local;
+- `cloudflared` được pin ở release `2026.10.0` và chỉ được thực thi khi SHA-256 chính thức của bản Linux AMD64 khớp;
 - evidence và cleanup xác định, bao gồm xóa token do notebook tự tạo.
 
 ## Biên runtime
@@ -76,7 +77,7 @@ Một release qualification thành công nên có:
 ```text
 KAGGLE_T4X2_GATE=PASS
 ATTACHED_INPUT_GATE=PASS
-FROZEN_SOURCE_IDENTITY=PASS
+FORK_SOURCE_IDENTITY=PASS
 CANONICAL_ENVIRONMENT=PASS
 MODEL_SHA256_GATE=PASS
 DUAL_GPU_MEMORY_RESIDENCY=PASS

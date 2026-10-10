@@ -5,15 +5,16 @@ The public `v1.0.0` release separates **release-build/export evidence** from
 **executed Kaggle publication-run evidence**.
 
 The existing portable release evidence proves deterministic source/export
-packaging. The publication evidence below proves a successful real Kaggle
-NVIDIA T4 x2 notebook run against the frozen `v1.0.0` runtime source.
+packaging. This page preserves a historical successful Kaggle NVIDIA T4 x2
+run of the upstream `v1.0.0` source. It does not qualify the current source in
+this fork; a fresh run from this fork is required for a fork-specific claim.
 
 ## Canonical publication run
 
 | Item | Value |
 | --- | --- |
 | Run ID | `20260906T115701Z` |
-| Runtime source tag | `v1.0.0` |
+| Historical upstream runtime source tag | `v1.0.0` |
 | Resolved runtime source HEAD | `9e4588c49144c00f38ae0799da16bfbf19dd495d` |
 | Hardware | Kaggle NVIDIA T4 x2 |
 | GPU0 model-residency delta | `8825 MiB` |
@@ -39,31 +40,17 @@ The DFlash2 total is the sum of all three real inference requests:
 These are observed single-run measurements. They demonstrate that speculative
 drafting was active; they are **not** a DFlash2-vs-baseline speedup benchmark.
 
-## Release assets
+## Releases for this fork
 
-- [`muse-glimmer-30b-v1.0.0-publication-evidence.zip`](https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/releases/download/v1.0.0/muse-glimmer-30b-v1.0.0-publication-evidence.zip)
-- [`muse-glimmer-30b-v1.0.0-publication-evidence.zip.sha256`](https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/releases/download/v1.0.0/muse-glimmer-30b-v1.0.0-publication-evidence.zip.sha256)
-- [`muse-glimmer-30b-v1.0.0-review-summary.txt`](https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/releases/download/v1.0.0/muse-glimmer-30b-v1.0.0-review-summary.txt)
+The historic `v1.0.0` download assets belonged to the upstream release and are not present in this fork. Do not treat the recorded checksum or metrics as a current validation of this fork. Run the notebook from this fork and publish the resulting evidence before making a fork-specific qualification claim.
 
-Publication evidence ZIP SHA-256:
+- [Releases for this fork](https://github.com/chloerbeach2026/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/releases)
+
+Historical upstream publication evidence ZIP SHA-256 (not this fork's artifact):
 
 ```text
 131d1bfcd4365e5c03c07feec3b969e558bbd2f846b65a416454e80a81cf2ca6
 ```
-
-The ZIP contains:
-
-```text
-muse-glimmer-30b-v1.0.0-demo-evidence.json
-muse-glimmer-30b-v1.0.0-interaction-evidence.json
-muse-glimmer-30b-v1.0.0-review-summary.txt
-muse-glimmer-30b-v1.0.0-SHA256SUMS
-```
-
-The JSON evidence files are byte-for-byte preserved from the successful run.
-The reviewer summary is a presentation-only correction that surfaces the
-semantic-sanity DFlash2 counters and explicitly describes the auto-generated
-credential as an ephemeral runtime file.
 
 ## Verification
 

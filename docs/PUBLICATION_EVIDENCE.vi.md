@@ -5,15 +5,16 @@ Public release `v1.0.0` tách rõ **bằng chứng build/export release** khỏi
 **bằng chứng publication run thực thi trên Kaggle**.
 
 Portable release evidence hiện có chứng minh quy trình đóng gói source/export
-xác định. Publication evidence dưới đây chứng minh một lần chạy notebook thực
-trên Kaggle NVIDIA T4 x2 thành công với runtime source `v1.0.0` đã khóa.
+xác định. Trang này lưu lại run Kaggle NVIDIA T4 x2 thành công trong lịch sử
+với source upstream `v1.0.0`. Nó không xác nhận source hiện tại của fork này;
+cần một run mới từ fork trước khi đưa ra claim qualification riêng.
 
 ## Publication run canonical
 
 | Mục | Giá trị |
 | --- | --- |
 | Run ID | `20260906T115701Z` |
-| Runtime source tag | `v1.0.0` |
+| Tag runtime source upstream trong lịch sử | `v1.0.0` |
 | Runtime source HEAD đã resolve | `9e4588c49144c00f38ae0799da16bfbf19dd495d` |
 | Phần cứng | Kaggle NVIDIA T4 x2 |
 | Delta model residency GPU0 | `8825 MiB` |
@@ -40,30 +41,17 @@ Tổng DFlash2 là tổng của cả ba inference request thực:
 drafting thực sự hoạt động; chúng **không** phải benchmark speedup
 DFlash2-vs-baseline.
 
-## Release assets
+## Releases của fork này
 
-- [`muse-glimmer-30b-v1.0.0-publication-evidence.zip`](https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/releases/download/v1.0.0/muse-glimmer-30b-v1.0.0-publication-evidence.zip)
-- [`muse-glimmer-30b-v1.0.0-publication-evidence.zip.sha256`](https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/releases/download/v1.0.0/muse-glimmer-30b-v1.0.0-publication-evidence.zip.sha256)
-- [`muse-glimmer-30b-v1.0.0-review-summary.txt`](https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/releases/download/v1.0.0/muse-glimmer-30b-v1.0.0-review-summary.txt)
+Các tệp tải xuống lịch sử của `v1.0.0` thuộc release upstream và chưa có trong fork này. Không dùng checksum hoặc metric lịch sử làm xác nhận hiện tại cho fork. Hãy chạy notebook từ fork này và publish evidence mới trước khi khẳng định fork đã được qualification.
 
-SHA-256 của publication evidence ZIP:
+- [Releases của fork này](https://github.com/chloerbeach2026/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/releases)
+
+SHA-256 publication evidence ZIP upstream trong lịch sử (không phải artifact của fork này):
 
 ```text
 131d1bfcd4365e5c03c07feec3b969e558bbd2f846b65a416454e80a81cf2ca6
 ```
-
-ZIP chứa:
-
-```text
-muse-glimmer-30b-v1.0.0-demo-evidence.json
-muse-glimmer-30b-v1.0.0-interaction-evidence.json
-muse-glimmer-30b-v1.0.0-review-summary.txt
-muse-glimmer-30b-v1.0.0-SHA256SUMS
-```
-
-Hai JSON evidence được giữ nguyên byte-for-byte từ successful run. Reviewer
-summary chỉ được hiệu chỉnh ở tầng trình bày để hiển thị counter DFlash2 của
-semantic sanity và mô tả rõ credential tự sinh là file runtime tạm thời.
 
 ## Xác minh
 

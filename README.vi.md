@@ -3,7 +3,7 @@
 
 ![Release](https://img.shields.io/badge/release-v1.0.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![CI](https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/chloerbeach2026/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/actions/workflows/ci.yml/badge.svg)
 ![Kaggle T4x2](https://img.shields.io/badge/kaggle-T4x2-orange)
 ![NVIDIA T4 x2](https://img.shields.io/badge/nvidia-T4%20x2-lightgray)
 ![llama.cpp](https://img.shields.io/badge/runtime-llama.cpp-606060)
@@ -199,29 +199,17 @@ find /kaggle/input -type f -name 'Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf' -print -
 
 Để chạy production-style trên Kaggle theo hướng dẫn đầy đủ, sử dụng [`notebooks/kaggle-production.ipynb`](notebooks/kaggle-production.ipynb).
 
-Notebook xác minh T4 x2 hardware gate, model/runtime inputs đính kèm, frozen source identity `v1.0.0`, xử lý Bearer token an toàn, real non-stream và SSE generation, Quick Tunnel transport tùy chọn, evidence và cleanup.
+Notebook xác minh T4 x2 hardware gate, model/runtime inputs đính kèm, commit `main` hiện tại của fork, xử lý Bearer token an toàn, real non-stream và SSE generation, Quick Tunnel transport tùy chọn, evidence và cleanup.
 
 Xem [`docs/KAGGLE_PRODUCTION.vi.md`](docs/KAGGLE_PRODUCTION.vi.md) để biết operator contract và các release qualification gate.
 
 ## Bằng chứng publication
 
-Successful publication run thực trên Kaggle T4 x2 được lưu tách biệt khỏi
-release-build/export evidence:
+Run Kaggle T4 x2 trong publication record lịch sử thuộc source upstream `v1.0.0`. Nó **không** xác nhận chất lượng hoặc hành vi của code hiện tại trong fork này. Cần chạy Kaggle mới từ fork trước khi phát hành evidence bundle riêng.
 
-- [publication evidence ZIP](https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/releases/download/v1.0.0/muse-glimmer-30b-v1.0.0-publication-evidence.zip)
-- [sidecar SHA-256 của ZIP](https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/releases/download/v1.0.0/muse-glimmer-30b-v1.0.0-publication-evidence.zip.sha256)
-- [reviewer summary](https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/releases/download/v1.0.0/muse-glimmer-30b-v1.0.0-review-summary.txt)
+- [Releases của fork này](https://github.com/chloerbeach2026/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2/releases) (chỉ publish evidence sau một run mới từ fork)
 
-SHA-256 bên ngoài của ZIP: `131d1bfcd4365e5c03c07feec3b969e558bbd2f846b65a416454e80a81cf2ca6`.
-
-Bundle chứng minh run T4 x2 đã ghi nhận, model hash, dual-GPU model residency,
-authenticated API behavior, non-stream + SSE inference, semantic sanity,
-DFlash2 speculative activity quan sát được, secret scanning và cleanup.
-Bundle không claim DFlash2 speedup so với matched baseline.
-
-Xem [`docs/PUBLICATION_EVIDENCE.vi.md`](docs/PUBLICATION_EVIDENCE.vi.md) để
-đọc evidence chain, lệnh xác minh, biên claim và sự khác nhau giữa notebook
-source sạch có thể chạy lại với executed run artifact.
+Xem [tài liệu publication evidence](docs/PUBLICATION_EVIDENCE.vi.md) để biết phạm vi các claim lịch sử và cách xác minh.
 
 ## Khởi động nhanh trên Kaggle T4x2
 
@@ -230,7 +218,7 @@ source sạch có thể chạy lại với executed run artifact.
 # 2) Đính kèm đúng các Kaggle resource/variation trong "Tệp mô hình".
 # 3) Clone repository này vào /kaggle/working.
 
-git clone https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2.git
+git clone https://github.com/chloerbeach2026/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2.git
 cd Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2
 
 # 4) Kiểm tra notebook sẵn sàng (chỉ đọc; không cần GPU/mô hình).
@@ -454,6 +442,7 @@ Xem [SECURITY.md](SECURITY.md). Những điểm chính:
 - Gateway **không bao giờ** ghi log hoặc lưu bearer tokens, prompts,
   completions, reasoning, hay raw request bodies; telemetry chỉ chứa counter.
 - Mô hình và runtime được khóa bằng SHA-256 / commit và kiểm lại khi start.
+- Production notebook pin Cloudflare `cloudflared` ở release `2026.10.0` và xác minh SHA-256 chính thức trước khi thực thi.
 - Backend chỉ-loopback: truy cập ngoài luôn qua gateway xác thực.
 - Tunnel công khai đưa gateway lên Internet — đó là trách nhiệm của bạn với tư
   cách operator, và bạn phải tự bảo vệ token của mình.
@@ -472,7 +461,7 @@ Xem [SECURITY.md](SECURITY.md). Những điểm chính:
 
 ## Tái lập
 
-- **Nguồn khóa chặt (frozen source):** mọi commit-tree được phủ bởi
+- **Toàn vẹn nguồn:** các tệp runtime được bao phủ bởi
   `SOURCE_MANIFEST.sha256` (xem `scripts/source_manifest.py`); tính toàn vẹn
   runtime được thực thi ở chế độ strict khi start.
 - **Test deterministic (chỉ CPU, không GPU/mô hình/tunnel/secrets):**

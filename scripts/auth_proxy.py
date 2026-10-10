@@ -123,9 +123,21 @@ class DemoTelemetry:
     def note_admitted(self, request_id: str) -> None:
         with self._lock:
             s = self.snapshot
+            s["requests_total"] += 1
             s["inference_admitted_total"] += 1
             s["last_request_id"] = request_id
             s["active_inference"] = True
+            self._flush_locked()
+
+    def note_validation_error(self, request_id: str, status: int = 400) -> None:
+        """Record rejected client payloads separately from backend failures."""
+        with self._lock:
+            s = self.snapshot
+            s["requests_total"] += 1
+            s["validation_error_total"] += 1
+            s["last_request_id"] = request_id
+            s["last_http_status"] = status
+            s["last_finish_class"] = "validation_error"
             self._flush_locked()
 
     def note_completed(self, status: int, duration_ms: float, ttft_ms: float, finish: str) -> None:
@@ -141,6 +153,7 @@ class DemoTelemetry:
     def note_busy(self, request_id: str) -> None:
         with self._lock:
             s = self.snapshot
+            s["requests_total"] += 1
             s["busy_rejected_total"] += 1
             s["last_request_id"] = request_id
             s["last_http_status"] = 429
@@ -150,6 +163,7 @@ class DemoTelemetry:
     def note_rate_limited(self, request_id: str) -> None:
         with self._lock:
             s = self.snapshot
+            s["requests_total"] += 1
             s["rate_limited_total"] += 1
             s["last_request_id"] = request_id
             s["last_http_status"] = 429
@@ -220,6 +234,9 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
         contract.  Never forward the public readiness path verbatim and never
         expose the backend response body.
         """
+        if admitted_here:
+            self.server.telemetry.note_admitted(request_id)
+
         backend_host = self.server.backend_host
         backend_port = self.server.backend_port
         conn = http.client.HTTPConnection(backend_host, backend_port, timeout=self.server.backend_timeout)
@@ -345,21 +362,19 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
         # For non-inference public routes, allocate a request id and record telemetry.
         if not admitted_here:
             self.server.telemetry.note_request(request_id, self.command == "HEAD" and 200 or None)
-        else:
-            self.server.telemetry.note_admitted(request_id)
 
         if self.command == "GET" and target.path == READY_PUBLIC_PATH:
             self._serve_ready(request_id, started)
             return
 
         # Validate JSON payload for chat/completions before forwarding.
-        if inference and body is not None and length > 0:
+        if inference:
             try:
-                payload = json.loads(body.decode("utf-8", "strict"))
+                payload = json.loads((body or b"").decode("utf-8", "strict"))
             except (ValueError, UnicodeDecodeError):
                 if admitted_here:
                     self.server.admission.release()
-                    self.server.telemetry.note_backend_error()
+                self.server.telemetry.note_validation_error(request_id, 400)
                 self._reject_json(400, P.build_error_body(
                     "Request body must be valid JSON.", "invalid_request_error",
                     P.ERROR_INVALID_PAYLOAD, request_id=request_id))
@@ -368,7 +383,7 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             if not ok:
                 if admitted_here:
                     self.server.admission.release()
-                    self.server.telemetry.note_backend_error()
+                self.server.telemetry.note_validation_error(request_id, 400)
                 err["request_id"] = request_id
                 self._reject_json(400, err)
                 return
@@ -386,10 +401,20 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
                     body=body,
                     headers=safe_request_headers(self.headers.items(), backend_host, backend_port),
                 )
+            except socket.timeout:
+                if admitted_here:
+                    self.server.admission.release()
+                self.server.telemetry.note_timeout(request_id)
+                self.server.telemetry.note_completed(504, (time.monotonic() - started) * 1000, ttft_ms, "timeout")
+                self._reject_json(504, P.build_error_body(
+                    "Backend request timed out.", "server_error", P.ERROR_REQUEST_TIMEOUT,
+                    request_id=request_id))
+                return
             except (OSError, http.client.HTTPException) as exc:
                 if admitted_here:
                     self.server.admission.release()
                 self.server.telemetry.note_backend_error()
+                self.server.telemetry.note_completed(502, (time.monotonic() - started) * 1000, ttft_ms, "backend_unavailable")
                 self._reject_json(502, P.build_error_body(
                     "Backend unavailable.", "server_error", P.ERROR_BACKEND_UNAVAILABLE,
                     request_id=request_id))
@@ -397,10 +422,20 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             backend_sock = getattr(conn, "sock", None)
             try:
                 response = conn.getresponse()
+            except socket.timeout:
+                if admitted_here:
+                    self.server.admission.release()
+                self.server.telemetry.note_timeout(request_id)
+                self.server.telemetry.note_completed(504, (time.monotonic() - started) * 1000, ttft_ms, "timeout")
+                self._reject_json(504, P.build_error_body(
+                    "Backend request timed out.", "server_error", P.ERROR_REQUEST_TIMEOUT,
+                    request_id=request_id))
+                return
             except (OSError, http.client.HTTPException) as exc:
                 if admitted_here:
                     self.server.admission.release()
                 self.server.telemetry.note_backend_error()
+                self.server.telemetry.note_completed(502, (time.monotonic() - started) * 1000, ttft_ms, "backend_unavailable")
                 self._reject_json(502, P.build_error_body(
                     "Backend unavailable.", "server_error", P.ERROR_BACKEND_UNAVAILABLE,
                     request_id=request_id))
@@ -428,11 +463,15 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
                     self.server.admission.release()
                 self.server.telemetry.note_completed(response.status, (time.monotonic() - started) * 1000, ttft_ms, "done")
                 return
+            finish_class = "backend_error" if response.status >= 500 else "done"
+            if response.status >= 500:
+                self.server.telemetry.note_backend_error()
             try:
                 while True:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         self.server.telemetry.note_timeout(request_id)
+                        finish_class = "timeout"
                         self.close_connection = True
                         return
                     self.connection.settimeout(min(max(remaining, 0.001), self.server.idle_timeout))
@@ -454,22 +493,30 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             except socket.timeout:
                 # Stall on the backend or expired hard deadline: fail closed.
                 self.server.telemetry.note_timeout(request_id)
+                finish_class = "timeout"
                 self.close_connection = True
                 return
-            except (OSError, http.client.HTTPException, ConnectionResetError):
-                # Client disconnect or backend failure: release the slot.
+            except (BrokenPipeError, ConnectionResetError):
+                # A peer closing the connection is not a backend failure.
+                finish_class = "client_disconnect"
+                self.close_connection = True
+                return
+            except (OSError, http.client.HTTPException):
                 self.server.telemetry.note_backend_error()
+                finish_class = "backend_error"
+                self.close_connection = True
                 return
             finally:
                 if admitted_here:
                     self.server.admission.release()
-                self.server.telemetry.note_completed(response.status, (time.monotonic() - started) * 1000, ttft_ms, "done")
+                self.server.telemetry.note_completed(response.status, (time.monotonic() - started) * 1000, ttft_ms, finish_class)
         except (OSError, http.client.HTTPException) as exc:
             if admitted_here:
                 self.server.admission.release()
+            self.server.telemetry.note_backend_error()
+            self.server.telemetry.note_completed(502, (time.monotonic() - started) * 1000, ttft_ms, "backend_error")
             if not self.wfile.closed:
                 try:
-                    self.server.telemetry.note_backend_error()
                     payload = json.dumps({
                         "error": {"message": "Backend unavailable.", "type": "server_error",
                                   "param": None, "code": P.ERROR_BACKEND_UNAVAILABLE},

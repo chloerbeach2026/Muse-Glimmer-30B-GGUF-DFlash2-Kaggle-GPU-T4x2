@@ -116,9 +116,10 @@ exit 0
 def main() -> int:
     version = ROOT.joinpath("VERSION").read_text(encoding="utf-8").strip()
     check("project version singleton", version == PUBLIC_VERSION, f"VERSION={version!r}")
+    readme_en = ROOT.joinpath("README.md").read_text(encoding="utf-8")
+    readme_vi = ROOT.joinpath("README.vi.md").read_text(encoding="utf-8")
 
-
-    notebook_path = ROOT / "notebooks" / "kaggle-production.ipynb"
+    notebook_path = ROOT / "notebooks" / "kaggle-production.ipynb
     notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
     notebook_meta = notebook.get("metadata", {}).get("muse_glimmer", {})
     notebook_code = "\n".join(
@@ -126,25 +127,49 @@ def main() -> int:
         for cell in notebook.get("cells", [])
         if cell.get("cell_type") == "code"
     )
-    check("notebook release identity metadata is version based",
+    check("notebook fork identity metadata is commit based",
           notebook_meta.get("expected_version") == PUBLIC_VERSION
+          and notebook_meta.get("source_identity_contract") == "fork_main_commit+version+clean_worktree+source_manifest"
           and "expected_head" not in notebook_meta
           and "expected_tree" not in notebook_meta)
     check("notebook release identity removes hardcoded commit and tree pins",
           "EXPECTED_HEAD" not in notebook_code
           and "EXPECTED_TREE" not in notebook_code)
-    check("notebook release identity resolves annotated tag",
-          'tag_object_type = run(["git", "cat-file", "-t", tag_ref]' in notebook_code
-          and 'tag_target = run(["git", "rev-parse", f"{tag_ref}^{{commit}}"], cwd=WORKDIR)' in notebook_code
-          and 'assert tag_object_type == "tag"' in notebook_code
-          and 'assert head == tag_target' in notebook_code)
-    check("notebook release identity verifies version manifest and clean worktree",
+    check("notebook pins this fork main branch to the exact resolved commit",
+          'REPO = "chloerbeach2026/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2"' in notebook_code
+          and 'SOURCE_REF = "main"' in notebook_code
+          and '"git", "ls-remote", "--heads", REPO_URL' in notebook_code
+          and '"--branch", SOURCE_REF' in notebook_code
+          and 'assert head == resolved_source_sha' in notebook_code)
+    check("notebook source identity verifies version, manifest and clean worktree",
           'release_version == EXPECTED_VERSION' in notebook_code
-          and 'SESSION["resolved_tag_target"] = tag_target' in notebook_code
+          and 'SESSION["resolved_source_sha"] = resolved_source_sha' in notebook_code
           and 'SESSION["worktree_clean"] = True' in notebook_code
           and 'SESSION.get("source_manifest") == "PASS"' in notebook_code)
+    check("project-owned repository references use the fork",
+          "chloerbeach2026/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2" in readme_en
+          and 'REPO = "chloerbeach2026/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2"' in notebook_code
+          and "dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2" not in notebook_code)
 
 
+    check("cloudflared release is pinned to an exact official version and SHA-256",
+          notebook_meta.get("cloudflared_supply_chain_contract") == "release_tag+official_sha256+exact_version"
+          and 'CLOUDFLARED_VERSION = "2026.10.0"' in notebook_code
+          and 'CLOUDFLARED_EXPECTED_SHA256 = "d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db"' in notebook_code
+          and "releases/download/" in notebook_code
+          and "releases/latest/download" not in notebook_code)
+    cloud_hash_guard = "if digest != CLOUDFLARED_EXPECTED_SHA256:"
+    cloud_version_probe = 'probe = run([str(candidate_path), "--version"], check=False)'
+    cloud_download_verify = 'temp_candidate = verify_cloudflared_candidate(temp_cloudflared, "download")'
+    cloud_atomic_install = "os.replace(temp_cloudflared, canonical_cloudflared)"
+    check("cloudflared checksum is verified before execution and installation",
+          cloud_hash_guard in notebook_code
+          and cloud_version_probe in notebook_code
+          and notebook_code.index(cloud_hash_guard) < notebook_code.index(cloud_version_probe)
+          and cloud_download_verify in notebook_code
+          and notebook_code.index(cloud_download_verify) < notebook_code.index(cloud_atomic_install)
+          and 'SESSION["cloudflared_sha256_verified"] = sha == CLOUDFLARED_EXPECTED_SHA256' in notebook_code
+          and 'SESSION.get("cloudflared_sha256_verified") is True' in notebook_code)
     check("notebook interaction transcript metadata contract",
           notebook_meta.get("interaction_evidence_contract")
           == "full_sanitized_request_response+raw_sse+secret_redaction"
@@ -199,8 +224,6 @@ def main() -> int:
     # BEGIN canonical DFlash2 dedicated q4-k-m input contract
     canonical_dflash_url = "https://www.kaggle.com/models/dangkhoa2016/incoai-muse-glimmer-30b-dflash2-gguf/Gguf/q4-k-m/1"
     legacy_dflash_url = "https://www.kaggle.com/models/dangkhoa2016/incoai-muse-glimmer-30b-dflash2-gguf/Gguf/default/1"
-    readme_en = ROOT.joinpath("README.md").read_text(encoding="utf-8")
-    readme_vi = ROOT.joinpath("README.vi.md").read_text(encoding="utf-8")
     kaggle_en = ROOT.joinpath("docs/KAGGLE_PRODUCTION.md").read_text(encoding="utf-8")
     kaggle_vi = ROOT.joinpath("docs/KAGGLE_PRODUCTION.vi.md").read_text(encoding="utf-8")
     notebook_markdown = "\n".join(

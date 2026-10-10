@@ -266,6 +266,7 @@ def new_telemetry_snapshot() -> dict[str, Any]:
         "last_finish_class": None,
         "requests_total": 0,
         "inference_admitted_total": 0,
+        "validation_error_total": 0,
         "busy_rejected_total": 0,
         "rate_limited_total": 0,
         "timeout_total": 0,
