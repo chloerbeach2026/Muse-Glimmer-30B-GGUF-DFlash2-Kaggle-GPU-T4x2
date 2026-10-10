@@ -368,6 +368,11 @@ start_exposure(){
   MUSE_API_TOKEN="$MUSE_API_TOKEN" nohup python3 "$ROOT/scripts/auth_proxy.py" \
     --listen-host "$PROXY_HOST" --listen-port "$PROXY_PORT" \
     --backend-host 127.0.0.1 --backend-port "${backend_url##*:}" \
+    --max-request-bytes "${MAX_REQUEST_BYTES:-33554432}" \
+    --queue-size "${ADMISSION_QUEUE_SIZE:-8}" \
+    --queue-wait-seconds "${ADMISSION_QUEUE_WAIT_SECONDS:-600}" \
+    --idle-timeout "${GATEWAY_IDLE_TIMEOUT:-180}" \
+    --hard-deadline "${GATEWAY_HARD_DEADLINE:-3600}" \
     >>"$PROXY_LOG" 2>&1 &
   PROXY_PID=$!
   wait_local_proxy || return $?
