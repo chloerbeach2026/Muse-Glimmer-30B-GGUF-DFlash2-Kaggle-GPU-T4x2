@@ -157,8 +157,8 @@ start_server() {
     python3 "$STATE_HELPER" clear-stale --state "$SERVER_STATE"
   fi
 
-  # Persistent serving uses the already-proven balanced inference profile.
-  RUN_PROFILE=balanced
+  # Persistent serving uses the full-context agent profile.
+  RUN_PROFILE=agent
   load_profile_exports
   export_effective_config
   case "$SERVE_PROFILE" in
@@ -178,13 +178,38 @@ start_server() {
   bash "$PROJECT_ROOT/scripts/setup.sh"
 
   # Serving is intentionally exact: no verified-fallback model substitution.
-  MODEL_SOURCE_MODE=kaggle
+  MODEL_SOURCE_MODE=hf
   MODEL_SELECTION_POLICY=exact
   MODEL_FILE="$CANONICAL_TARGET_FILE"
   MODEL_EXPECTED_SIZE_BYTES="$CANONICAL_TARGET_SIZE"
   MODEL_EXPECTED_SHA256="$CANONICAL_TARGET_SHA"
   export MODEL_SOURCE_MODE MODEL_SELECTION_POLICY MODEL_FILE MODEL_EXPECTED_SIZE_BYTES MODEL_EXPECTED_SHA256
   bash "$PROJECT_ROOT/scripts/download_model.sh"
+
+  # Required multimodal projector comes only from the pinned Hugging Face repository.
+  MM_PROJ_PATH="${MM_PROJ_PATH:-$MODELS_DIR/${MM_PROJ_FILE:-mmproj-Muse-Glimmer-30B-Q4_K_M.gguf}}"
+  if [[ "${MM_PROJ_REQUIRED:-1}" == 1 ]]; then
+    if [[ ! -s "$MM_PROJ_PATH" ]]; then
+      hf_download_asset "${MM_PROJ_REPO:-meta-models/Muse-Glimmer-30B-GGUF}" \
+        "${MM_PROJ_FILE:-mmproj-Muse-Glimmer-30B-Q4_K_M.gguf}" \
+        "${MM_PROJ_REVISION:-43c7eadd41352a299ea8e0a36b3157978dd63596}" "$MODELS_DIR"
+    fi
+    [[ -s "$MM_PROJ_PATH" ]] || { echo "ERROR: required HF vision projector missing: $MM_PROJ_PATH" >&2; exit 4; }
+    mmproj_size="$(stat -Lc '%s' "$MM_PROJ_PATH")"
+    mmproj_sha="$(sha256sum "$MM_PROJ_PATH" | awk '{print $1}')"
+    [[ "$mmproj_size" == "${MM_PROJ_SIZE_BYTES:-1400328928}" ]] || {
+      echo "ERROR: HF vision projector size mismatch expected=${MM_PROJ_SIZE_BYTES:-1400328928} actual=$mmproj_size" >&2
+      exit 4
+    }
+    [[ "$mmproj_sha" == "${MM_PROJ_SHA256:-f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6}" ]] || {
+      echo "ERROR: HF vision projector SHA-256 mismatch actual=$mmproj_sha" >&2
+      exit 4
+    }
+  else
+    MM_PROJ_PATH=""
+    mmproj_size=0
+    mmproj_sha=""
+  fi
 
   load_runtime_state
   apply_nvidia_runtime_env
@@ -235,8 +260,12 @@ start_server() {
   draft_batch_threads="$(resolve_pool_threads "$DFLASH_DRAFT_BATCH_THREADS" "$batch_threads")"
   context_per_slot=$(( CONTEXT_SIZE / PARALLEL_SLOTS ))
   CONTEXT_PER_SLOT="$context_per_slot"
-  (( CONTEXT_PER_SLOT >= MAX_TOKENS + 512 )) || {
-    echo "ERROR: context per slot ($context_per_slot) is too small for MAX_TOKENS=$MAX_TOKENS." >&2
+  (( CONTEXT_PER_SLOT >= 4096 )) || {
+    echo "ERROR: context per slot ($context_per_slot) is below the safe minimum of 4096." >&2
+    exit 4
+  }
+  (( MAX_TOKENS >= 1 && MAX_TOKENS <= CONTEXT_PER_SLOT )) || {
+    echo "ERROR: MAX_TOKENS=$MAX_TOKENS must be between 1 and context per slot ($CONTEXT_PER_SLOT)." >&2
     exit 4
   }
 
@@ -250,13 +279,24 @@ start_server() {
 
   local -a gpu_args=(-ngl "$GPU_LAYERS" -sm "$GPU_SPLIT_MODE")
   [[ -n "${GPU_TENSOR_SPLIT:-}" ]] && gpu_args+=(-ts "$GPU_TENSOR_SPLIT")
+  server_help="$("$server_bin" --help 2>&1)" || { echo "ERROR: unable to inspect llama-server flags." >&2; exit 4; }
+  for required_flag in --jinja --chat-template-kwargs --mmproj --cache-type-k --cache-type-v; do
+    grep -q -- "$required_flag" <<<"$server_help" || {
+      echo "ERROR: pinned llama-server does not support required agent flag $required_flag." >&2
+      exit 4
+    }
+  done
   local -a server_cmd=(
     "$server_bin" -m "$model_path" -a muse-glimmer-30B -c "$CONTEXT_SIZE" -np "$PARALLEL_SLOTS"
     -t "$threads" -tb "$batch_threads" -b "$BATCH_SIZE" -ub "$UBATCH_SIZE"
     "${gpu_args[@]}"
     --host "$SERVER_HOST" --port "$SERVER_PORT" --jinja
-    --temp "$TEMPERATURE" --top-p "$TOP_P" --top-k "$TOP_K" --reasoning-budget "$REASONING_BUDGET"
+    --temp "$TEMPERATURE" --top-p "$TOP_P" --top-k "$TOP_K"
+    --chat-template-kwargs "{\"reasoning_strength\":\"$REASONING_STRENGTH\"}"
+    --cache-type-k q8_0 --cache-type-v q8_0
   )
+  if [[ -n "$MM_PROJ_PATH" ]]; then server_cmd+=(--mmproj "$MM_PROJ_PATH"); fi
+  if [[ "${REASONING_BUDGET:-0}" =~ ^[1-9][0-9]*$ ]]; then server_cmd+=(--reasoning-budget "$REASONING_BUDGET"); fi
   if [[ "$SPECULATIVE_MODE" == dflash ]]; then
     local -a dflash_args=()
     mapfile -d '' -t dflash_args < <(
@@ -271,12 +311,35 @@ start_server() {
 
   python3 "$PROJECT_ROOT/scripts/server_guard.py" port-free --host "$SERVER_HOST" --port "$SERVER_PORT"
 
+  local -a context_candidates=()
+  local candidate next_context i server_pid ready_rc can_retry
+  context_candidates+=("$CONTEXT_SIZE")
+  if [[ "${AUTO_CONTEXT_FALLBACK:-1}" == 1 ]]; then
+    for candidate in 65536 32768 16384 8192 4096; do
+      if (( candidate < CONTEXT_SIZE )); then context_candidates+=("$candidate"); fi
+    done
+  fi
+
+  : > "$SERVER_LOG"
   export SERVE_META_PROFILE="$SERVE_PROFILE" SERVE_META_TARGET_PATH="$model_path" SERVE_META_TARGET_SHA="$CANONICAL_TARGET_SHA"
   export SERVE_META_DRAFT_PATH="$draft_path" SERVE_META_DRAFT_SHA="$draft_sha" SERVE_META_RUNTIME_SOURCE="${LLAMA_RUNTIME_SOURCE:-}"
   export SERVE_META_RUNTIME_COMMIT="$runtime_commit" SERVE_META_CUDA="$CUDA_VISIBLE_DEVICES" SERVE_META_GPU_COUNT="$GPU_REQUIRED_COUNT"
   export SERVE_META_SERVER_BIN="$server_bin" SERVE_META_SERVER_BIN_SHA="${LLAMA_BINARY_SHA256_SERVER:-}"
-  export SERVE_META_CONTEXT="$CONTEXT_SIZE" SERVE_META_THREADS="$threads" SERVE_META_BATCH_THREADS="$batch_threads"
-  python3 - "$SERVER_METADATA" <<'PY'
+  export SERVE_META_THREADS="$threads" SERVE_META_BATCH_THREADS="$batch_threads"
+  for candidate in "${context_candidates[@]}"; do
+    next_context=$(( candidate / PARALLEL_SLOTS ))
+    (( next_context >= 4096 && MAX_TOKENS <= next_context )) || continue
+    local -a attempt_cmd=("${server_cmd[@]}")
+    for ((i=0; i<${#attempt_cmd[@]}; i++)); do
+      if [[ "${attempt_cmd[$i]}" == "-c" ]] && (( i + 1 < ${#attempt_cmd[@]} )); then
+        attempt_cmd[$((i+1))]="$candidate"
+        break
+      fi
+    done
+    export SERVE_META_CONTEXT="$candidate" SERVE_META_MAX_TOKENS="$MAX_TOKENS"
+    export SERVE_META_REASONING="$REASONING_STRENGTH" SERVE_META_MM_PROJ_PATH="$MM_PROJ_PATH"
+    export SERVE_META_MM_PROJ_SHA="$mmproj_sha" SERVE_META_MM_PROJ_SIZE="$mmproj_size"
+    python3 - "$SERVER_METADATA" <<'PY'
 import json,os,sys
 m={
   'profile':os.environ['SERVE_META_PROFILE'],
@@ -285,49 +348,68 @@ m={
   'runtime_source':os.environ['SERVE_META_RUNTIME_SOURCE'], 'runtime_commit':os.environ['SERVE_META_RUNTIME_COMMIT'],
   'cuda_visible_devices':os.environ['SERVE_META_CUDA'], 'gpu_count':int(os.environ['SERVE_META_GPU_COUNT']),
   'server_bin':os.environ['SERVE_META_SERVER_BIN'], 'server_bin_sha256':os.environ['SERVE_META_SERVER_BIN_SHA'] or None,
-  'context_size':int(os.environ['SERVE_META_CONTEXT']), 'threads':int(os.environ['SERVE_META_THREADS']),
-  'batch_threads':int(os.environ['SERVE_META_BATCH_THREADS']),
+  'context_size':int(os.environ['SERVE_META_CONTEXT']), 'max_tokens':int(os.environ['SERVE_META_MAX_TOKENS']),
+  'reasoning_strength':os.environ['SERVE_META_REASONING'],
+  'mmproj_path':os.environ['SERVE_META_MM_PROJ_PATH'] or None, 'mmproj_sha256':os.environ['SERVE_META_MM_PROJ_SHA'] or None,
+  'mmproj_size_bytes':int(os.environ['SERVE_META_MM_PROJ_SIZE']),
+  'threads':int(os.environ['SERVE_META_THREADS']), 'batch_threads':int(os.environ['SERVE_META_BATCH_THREADS']),
 }
 with open(sys.argv[1],'w',encoding='utf-8') as f: json.dump(m,f,indent=2,sort_keys=True); f.write('\n')
 PY
+    {
+      echo "# profile=$SERVE_PROFILE host=$SERVER_HOST port=$SERVER_PORT requested_context=$CONTEXT_SIZE actual_attempt_context=$candidate max_tokens=$MAX_TOKENS"
+      echo "# target_sha256=$CANONICAL_TARGET_SHA draft_sha256=${draft_sha:-none}"
+      echo "# runtime_source=${LLAMA_RUNTIME_SOURCE:-unknown} runtime_commit=$runtime_commit"
+      echo "# mmproj_sha256=${mmproj_sha:-none} mmproj_size_bytes=${mmproj_size:-0}"
+      printf '# command:'; printf ' %q' "${runtime_env[@]}" "${attempt_cmd[@]}"; echo
+    } >> "$SERVER_LOG"
 
-  : > "$SERVER_LOG"
-  {
-    echo "# Muse-Glimmer-30B Persistent Server 1.0.0"
-    echo "# profile=$SERVE_PROFILE host=$SERVER_HOST port=$SERVER_PORT"
-    echo "# target_sha256=$CANONICAL_TARGET_SHA"
-    echo "# draft_sha256=${draft_sha:-none}"
-    echo "# runtime_source=${LLAMA_RUNTIME_SOURCE:-unknown} runtime_commit=$runtime_commit"
-    echo "# CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
-    printf '# command:'; printf ' %q' "${runtime_env[@]}" "${server_cmd[@]}"; echo
-  } >> "$SERVER_LOG"
-
-  echo "Starting persistent Muse-Glimmer server: profile=$SERVE_PROFILE host=$SERVER_HOST port=$SERVER_PORT"
-  nohup "${runtime_env[@]}" "${server_cmd[@]}" >> "$SERVER_LOG" 2>&1 < /dev/null &
-  local server_pid=$!
-  if ! python3 "$STATE_HELPER" begin --state "$SERVER_STATE" --pid "$server_pid" \
-      --profile "$SERVE_PROFILE" --host "$SERVER_HOST" --port "$SERVER_PORT" --log "$SERVER_LOG" --metadata-json "$SERVER_METADATA" \
-      --command-token "$server_bin"; then
-    terminate_process "$server_pid" 2 || true
-    exit 10
-  fi
-
-  if python3 "$PROJECT_ROOT/scripts/server_guard.py" wait-ready --pid "$server_pid" \
-      --url "http://$SERVER_HOST:$SERVER_PORT/health" --url "http://$SERVER_HOST:$SERVER_PORT/v1/models" \
-      --timeout "$SERVER_START_TIMEOUT" --interval 1; then
-    :
-  else
-    local ready_rc=$?
-    tail -n 160 "$SERVER_LOG" >&2 || true
-    if python3 "$STATE_HELPER" owned-pid --state "$SERVER_STATE" >/dev/null 2>&1; then
-      terminate_process "$server_pid" 5 || true
+    echo "Starting persistent Muse-Glimmer server: profile=$SERVE_PROFILE host=$SERVER_HOST port=$SERVER_PORT context=$candidate output_cap=$MAX_TOKENS"
+    nohup "${runtime_env[@]}" "${attempt_cmd[@]}" >> "$SERVER_LOG" 2>&1 < /dev/null &
+    server_pid=$!
+    if ! python3 "$STATE_HELPER" begin --state "$SERVER_STATE" --pid "$server_pid" \
+        --profile "$SERVE_PROFILE" --host "$SERVER_HOST" --port "$SERVER_PORT" --log "$SERVER_LOG" --metadata-json "$SERVER_METADATA" \
+        --command-token "$server_bin"; then
+      terminate_process "$server_pid" 2 || true
+      exit 10
     fi
-    python3 "$STATE_HELPER" mark-stopped --state "$SERVER_STATE" --reason readiness-failed || true
-    exit "$ready_rc"
-  fi
-  python3 "$STATE_HELPER" mark-ready --state "$SERVER_STATE"
-  echo 'Persistent server STARTED / READY.'
-  print_status
+
+    if python3 "$PROJECT_ROOT/scripts/server_guard.py" wait-ready --pid "$server_pid" \
+        --url "http://$SERVER_HOST:$SERVER_PORT/health" --url "http://$SERVER_HOST:$SERVER_PORT/v1/models" \
+        --timeout "$SERVER_START_TIMEOUT" --interval 1; then
+      python3 "$STATE_HELPER" mark-ready --state "$SERVER_STATE"
+      echo "SERVER_CONTEXT_REQUESTED=$CONTEXT_SIZE"
+      echo "SERVER_CONTEXT_EFFECTIVE=$candidate"
+      echo "SERVER_MAX_OUTPUT_TOKENS=$MAX_TOKENS"
+      if (( candidate < CONTEXT_SIZE )); then
+        echo "CONTEXT_AUTO_FALLBACK=USED requested=$CONTEXT_SIZE effective=$candidate"
+      else
+        echo "CONTEXT_AUTO_FALLBACK=NOT_NEEDED"
+      fi
+      echo 'Persistent server STARTED / READY.'
+      print_status
+      return 0
+    else
+      ready_rc=$?
+      can_retry=0
+      if ! kill -0 "$server_pid" 2>/dev/null || grep -Eiq 'out of memory|failed to allocate|allocation failed|CUDA error:.*(memory|alloc)|KV cache.*(fail|alloc|memory)|not enough (free )?memory' "$SERVER_LOG"; then
+        can_retry=1
+      fi
+      tail -n 120 "$SERVER_LOG" >&2 || true
+      if python3 "$STATE_HELPER" owned-pid --state "$SERVER_STATE" >/dev/null 2>&1; then
+        terminate_process "$server_pid" 5 || true
+      fi
+      python3 "$STATE_HELPER" mark-stopped --state "$SERVER_STATE" --reason readiness-failed || true
+      if (( can_retry == 1 )) && [[ "${AUTO_CONTEXT_FALLBACK:-1}" == 1 ]]; then
+        echo "CONTEXT_ATTEMPT_FAILED=$candidate; evaluating next smaller context after resource/startup failure." >&2
+        continue
+      fi
+      echo "ERROR: server did not become ready at context=$candidate; no safe automatic fallback condition detected." >&2
+      exit "$ready_rc"
+    fi
+  done
+  echo "ERROR: no context candidate fits MAX_TOKENS=$MAX_TOKENS (requested CONTEXT_SIZE=$CONTEXT_SIZE)." >&2
+  exit 4
 }
 
 stop_server() {
