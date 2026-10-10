@@ -55,6 +55,23 @@ export VENV_DIR LLAMA_DIR MODELS_DIR RUNS_DIR ARTIFACTS_DIR COMPARISONS_DIR RUNT
 
 python_bin() { if [[ -x "$VENV_DIR/bin/python" ]]; then echo "$VENV_DIR/bin/python"; else command -v python3; fi; }
 hf_bin() { if [[ -x "$VENV_DIR/bin/hf" ]]; then echo "$VENV_DIR/bin/hf"; else command -v hf || true; fi; }
+hf_download_asset() {
+  local repo_id="$1" filename="$2" revision="$3" local_dir="${4:-$MODELS_DIR}" hf
+  hf="$(hf_bin)"
+  [[ -n "$hf" ]] || { echo 'ERROR: hf CLI is unavailable; run ./serve.sh start to bootstrap dependencies.' >&2; return 2; }
+  [[ -n "$repo_id" && -n "$filename" && -n "$revision" ]] || { echo 'ERROR: HF repo, filename, and revision are required.' >&2; return 2; }
+  mkdir -p "$local_dir"
+  echo "HF_DOWNLOAD_START repo=$repo_id file=$filename revision=$revision workers=${HF_DOWNLOAD_WORKERS:-32} xet_concurrency=${HF_XET_FIXED_DOWNLOAD_CONCURRENCY:-32}"
+  HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}" \
+  HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}" \
+  HF_XET_FIXED_DOWNLOAD_CONCURRENCY="${HF_XET_FIXED_DOWNLOAD_CONCURRENCY:-32}" \
+    "$hf" download "$repo_id" "$filename" \
+      --revision "$revision" --local-dir "$local_dir" \
+      --max-workers "${HF_DOWNLOAD_WORKERS:-32}"
+  [[ -s "$local_dir/$filename" ]] || { echo "ERROR: HF download completed without a non-empty asset: $local_dir/$filename" >&2; return 3; }
+  echo "HF_DOWNLOAD_DONE repo=$repo_id file=$filename bytes=$(stat -Lc '%s' "$local_dir/$filename")"
+}
+
 monotonic_now() { python3 -c 'import time; print(time.monotonic())'; }
 elapsed_since() { python3 - "$1" <<'PYTIME'
 import sys,time
