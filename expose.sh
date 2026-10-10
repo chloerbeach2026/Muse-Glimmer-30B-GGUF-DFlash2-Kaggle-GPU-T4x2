@@ -4,7 +4,10 @@ set -Eeuo pipefail
 set +x
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$ROOT/scripts/common.sh"
+export_effective_config
 STATE_DIR="${RUNTIME_STATE_DIR:-$ROOT/artifacts/runtime-state}"
+TUNNEL_TOKEN_FILE="$STATE_DIR/named-tunnel-token"
 STATE_FILE="$STATE_DIR/exposure.json"
 PROXY_LOG="$STATE_DIR/exposure-proxy.log"
 TUNNEL_LOG="$STATE_DIR/exposure-tunnel.log"
@@ -287,6 +290,7 @@ cleanup_partial(){
   # are safe to terminate directly. Reaping is intentionally left to shell exit.
   terminate_started_pid_bounded "$TUNNEL_PID"
   terminate_started_pid_bounded "$PROXY_PID"
+  rm -f "$TUNNEL_TOKEN_FILE"
   set -e
 }
 
@@ -405,7 +409,12 @@ start_exposure(){
     fi
     public_url="$(state_value PUBLIC_URL "$public_gate")"
     [[ -n "$public_url" ]] || { echo 'ERROR: named public URL gate returned no canonical URL' >&2; return 53; }
-    TUNNEL_TOKEN="$tunnel_token" NO_AUTOUPDATE=true nohup "$CLOUDFLARED_BIN" tunnel run >>"$TUNNEL_LOG" 2>&1 &
+    # Keep the named-tunnel credential out of argv and cloudflared's process environment.
+    install -m 600 /dev/null "$TUNNEL_TOKEN_FILE"
+    printf '%s' "$tunnel_token" > "$TUNNEL_TOKEN_FILE"
+    chmod 600 "$TUNNEL_TOKEN_FILE"
+    unset TUNNEL_TOKEN tunnel_token
+    NO_AUTOUPDATE=true nohup "$CLOUDFLARED_BIN" tunnel run --token-file "$TUNNEL_TOKEN_FILE" >>"$TUNNEL_LOG" 2>&1 &
     TUNNEL_PID=$!
   fi
 
@@ -425,11 +434,13 @@ start_exposure(){
 stop_exposure(){
   mkdir -p "$STATE_DIR"
   if [[ ! -f "$STATE_FILE" ]]; then
+    rm -f "$TUNNEL_TOKEN_FILE"
     echo 'External exposure already STOPPED.'
     state_status
     return 0
   fi
   python3 "$ROOT/scripts/exposure_state.py" stop-owned --state "$STATE_FILE" --timeout "$STOP_TIMEOUT"
+  rm -f "$TUNNEL_TOKEN_FILE"
   echo 'Secure external exposure STOPPED.'
   state_status
 }
