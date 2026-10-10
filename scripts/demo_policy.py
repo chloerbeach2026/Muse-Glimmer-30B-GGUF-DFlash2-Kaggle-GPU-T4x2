@@ -22,29 +22,32 @@ import json
 import secrets
 import time
 import uuid
+import threading
 from typing import Any, Optional
 
 # ---------------------------------------------------------------------------
 # Public contract constants (frozen public behavior).
 # ---------------------------------------------------------------------------
-MAX_BODY_BYTES = 131072
-MAX_MESSAGES = 64
-MAX_AGGREGATE_CONTENT = 32768
-MAX_SINGLE_CONTENT = 16384
-DEFAULT_MAX_TOKENS = 256
+MAX_BODY_BYTES = 33554432
+MAX_MESSAGES = 256
+MAX_AGGREGATE_CONTENT = 30000000
+MAX_SINGLE_CONTENT = 25000000
+DEFAULT_MAX_TOKENS = 8192
 MIN_MAX_TOKENS = 1
-MAX_TOKENS = 512
+MAX_TOKENS = 131072
+MAX_TOOL_CALLS = 128
 
-CONNECT_TIMEOUT = 5.0
-IDLE_TIMEOUT = 60.0
-HARD_DEADLINE = 180.0
+CONNECT_TIMEOUT = 15.0
+IDLE_TIMEOUT = 180.0
+HARD_DEADLINE = 3600.0
 
-RATE_CAPACITY = 2
-RATE_REFILL_PER_SEC = 0.1
+RATE_CAPACITY = 30
+RATE_REFILL_PER_SEC = 1.0
 RATE_COST = 1
 
 MAX_ACTIVE_INFERENCE = 1
-MAX_QUEUED_INFERENCE = 0
+MAX_QUEUED_INFERENCE = 8
+QUEUE_WAIT_SECONDS = 600.0
 BUSY_RETRY_AFTER = "5"
 
 TELEMETRY_SCHEMA_VERSION = 1
@@ -124,69 +127,110 @@ def error_code(error: dict[str, Any]) -> str:
 
 
 def effective_max_tokens(payload: dict[str, Any]) -> int:
-    if isinstance(payload, dict) and "max_tokens" in payload:
-        return int(payload["max_tokens"])
+    if isinstance(payload, dict):
+        for key in ("max_completion_tokens", "max_tokens"):
+            if key in payload:
+                return int(payload[key])
     return DEFAULT_MAX_TOKENS
 
 
-def validate_payload(payload: Any) -> tuple[bool, dict[str, Any]]:
-    """Validate a parsed chat/completions payload.
+def _content_size(content: Any) -> tuple[bool, int]:
+    """Return validity and conservative serialized character count for content."""
+    if isinstance(content, str):
+        return True, len(content)
+    if content is None:
+        return True, 0
+    if isinstance(content, list):
+        try:
+            return all(isinstance(part, dict) for part in content), len(json.dumps(content, ensure_ascii=False))
+        except (TypeError, ValueError):
+            return False, 0
+    return False, 0
 
-    Returns ``(True, {})`` on success or ``(False, error_body)`` on failure.
+
+def validate_payload(payload: Any) -> tuple[bool, dict[str, Any]]:
+    """Validate OpenAI-compatible text, multimodal content, and tool-call history.
+
+    Unknown optional fields are preserved so forward-compatible agent features can
+    reach llama.cpp unchanged; this function validates structure and resource bounds.
     """
+    def fail(message: str, code: str = ERROR_INVALID_PAYLOAD):
+        return False, build_error_body(message, "invalid_request_error", code)
+
     if not isinstance(payload, dict):
-        return False, build_error_body(
-            "Request body must be a JSON object.", "invalid_request_error",
-            ERROR_INVALID_PAYLOAD,
-        )
+        return fail("Request body must be a JSON object.")
     messages = payload.get("messages")
     if not isinstance(messages, list) or not messages:
-        return False, build_error_body(
-            "Field 'messages' is required and must be a non-empty array.",
-            "invalid_request_error", ERROR_INVALID_PAYLOAD,
-        )
+        return fail("Field 'messages' is required and must be a non-empty array.")
     if len(messages) > MAX_MESSAGES:
-        return False, build_error_body(
-            f"Field 'messages' exceeds the maximum of {MAX_MESSAGES}.",
-            "invalid_request_error", ERROR_TOO_MANY_MESSAGES,
-        )
+        return fail(f"Field 'messages' exceeds the maximum of {MAX_MESSAGES}.", ERROR_TOO_MANY_MESSAGES)
+
     aggregate = 0
-    for msg in messages:
+    allowed_roles = {"system", "developer", "user", "assistant", "tool"}
+    for index, msg in enumerate(messages):
         if not isinstance(msg, dict):
-            return False, build_error_body(
-                "Each message must be an object.", "invalid_request_error",
-                ERROR_INVALID_PAYLOAD,
-            )
+            return fail("Each message must be an object.")
         role = msg.get("role")
+        if role not in allowed_roles:
+            return fail(f"Message {index} has unsupported role.")
         content = msg.get("content")
-        if role not in ("user", "assistant", "system") or not isinstance(content, str):
-            return False, build_error_body(
-                "Each message needs a valid 'role' and string 'content'.",
-                "invalid_request_error", ERROR_INVALID_PAYLOAD,
-            )
-        if len(content) > MAX_SINGLE_CONTENT:
-            return False, build_error_body(
-                f"Single message content exceeds {MAX_SINGLE_CONTENT} chars.",
-                "invalid_request_error", ERROR_CONTENT_TOO_LONG,
-            )
-        aggregate += len(content)
+        valid_content, content_size = _content_size(content)
+        if not valid_content:
+            return fail("Message content must be text, null, or an array of content-part objects.")
+        if content is None and role != "assistant":
+            return fail("Only assistant messages may have null content.")
+        if content_size > MAX_SINGLE_CONTENT:
+            return fail(f"Single message content exceeds {MAX_SINGLE_CONTENT} characters.", ERROR_CONTENT_TOO_LONG)
+        aggregate += content_size
+
+        if role == "tool" and not isinstance(msg.get("tool_call_id"), str):
+            return fail("Tool result messages require a string 'tool_call_id'.")
+        if "tool_call_id" in msg and not isinstance(msg["tool_call_id"], str):
+            return fail("'tool_call_id' must be a string.")
+
+        calls = msg.get("tool_calls")
+        if calls is not None:
+            if role != "assistant" or not isinstance(calls, list):
+                return fail("'tool_calls' is allowed only as an array on assistant messages.")
+            if len(calls) > MAX_TOOL_CALLS:
+                return fail(f"Message has more than {MAX_TOOL_CALLS} tool calls.", ERROR_TOO_MANY_MESSAGES)
+            for call in calls:
+                if not isinstance(call, dict) or not isinstance(call.get("id"), str):
+                    return fail("Each tool call needs a string id.")
+                if call.get("type", "function") != "function":
+                    return fail("Only function tool calls are supported by this endpoint.")
+                function = call.get("function")
+                if not isinstance(function, dict) or not isinstance(function.get("name"), str):
+                    return fail("Each tool call needs function.name.")
+                arguments = function.get("arguments", "{}")
+                if not isinstance(arguments, (str, dict, list)):
+                    return fail("Tool function arguments must be JSON-compatible.")
+                try:
+                    aggregate += len(arguments) if isinstance(arguments, str) else len(json.dumps(arguments, ensure_ascii=False))
+                except (TypeError, ValueError):
+                    return fail("Tool function arguments must be JSON-compatible.")
         if aggregate > MAX_AGGREGATE_CONTENT:
-            return False, build_error_body(
-                f"Aggregate message content exceeds {MAX_AGGREGATE_CONTENT} chars.",
-                "invalid_request_error", ERROR_CONTENT_TOO_LONG,
-            )
-    if "max_tokens" in payload:
-        mt = payload["max_tokens"]
-        if isinstance(mt, bool) or not isinstance(mt, int) or isinstance(mt, float):
-            return False, build_error_body(
-                "Field 'max_tokens' must be an integer.", "invalid_request_error",
-                ERROR_INVALID_MAX_TOKENS,
-            )
-        if not (MIN_MAX_TOKENS <= mt <= MAX_TOKENS):
-            return False, build_error_body(
-                f"Field 'max_tokens' must be between {MIN_MAX_TOKENS} and {MAX_TOKENS}.",
-                "invalid_request_error", ERROR_INVALID_MAX_TOKENS,
-            )
+            return fail(f"Aggregate message content exceeds {MAX_AGGREGATE_CONTENT} characters.", ERROR_CONTENT_TOO_LONG)
+
+    for key in ("max_tokens", "max_completion_tokens"):
+        if key in payload:
+            mt = payload[key]
+            if isinstance(mt, bool) or not isinstance(mt, int):
+                return fail(f"Field '{key}' must be an integer.", ERROR_INVALID_MAX_TOKENS)
+            if not (MIN_MAX_TOKENS <= mt <= MAX_TOKENS):
+                return fail(f"Field '{key}' must be between {MIN_MAX_TOKENS} and {MAX_TOKENS}.", ERROR_INVALID_MAX_TOKENS)
+    if "stream" in payload and not isinstance(payload["stream"], bool):
+        return fail("Field 'stream' must be a boolean.")
+    if "tools" in payload:
+        tools = payload["tools"]
+        if not isinstance(tools, list) or len(tools) > MAX_TOOL_CALLS:
+            return fail(f"Field 'tools' must be an array of at most {MAX_TOOL_CALLS} items.")
+        for tool in tools:
+            if not isinstance(tool, dict) or tool.get("type", "function") != "function":
+                return fail("Only function tools are supported.")
+            fn = tool.get("function")
+            if not isinstance(fn, dict) or not isinstance(fn.get("name"), str):
+                return fail("Each tool must define function.name.")
     return True, {}
 
 
@@ -194,20 +238,42 @@ def validate_payload(payload: Any) -> tuple[bool, dict[str, Any]]:
 # Single inference admission slot (Task 3).
 # ---------------------------------------------------------------------------
 class AdmissionSlot:
-    """Single inference admission slot owned by the gateway policy layer."""
+    """Thread-safe single-inference slot with a bounded timed wait queue."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_queued: int = 0, wait_seconds: float = 0.0) -> None:
+        self.max_queued = max(0, int(max_queued))
+        self.wait_seconds = max(0.0, float(wait_seconds))
         self._active = False
+        self._waiting = 0
+        self._condition = threading.Condition()
 
-    def try_acquire(self) -> bool:
-        if self._active:
-            return False
-        self._active = True
-        return True
+    def try_acquire(self, wait_seconds: float | None = None) -> bool:
+        timeout = self.wait_seconds if wait_seconds is None else max(0.0, float(wait_seconds))
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            if not self._active and self._waiting == 0:
+                self._active = True
+                return True
+            if timeout <= 0 or self.max_queued <= self._waiting:
+                return False
+            self._waiting += 1
+            try:
+                while self._active:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return False
+                    self._condition.wait(remaining)
+                self._active = True
+                return True
+            finally:
+                self._waiting -= 1
+                self._condition.notify_all()
 
     def release(self) -> None:
-        if self._active:
-            self._active = False
+        with self._condition:
+            if self._active:
+                self._active = False
+                self._condition.notify_all()
 
 
 # ---------------------------------------------------------------------------
