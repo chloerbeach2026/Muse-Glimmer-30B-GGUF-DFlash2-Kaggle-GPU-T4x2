@@ -47,6 +47,22 @@
     "llama_bench_gen": 64,
     "llama_bench_reps": 3
   },
-  "standard": {"alias_of": "balanced"},
-  "extended": {"alias_of": "deep"}
+  "standard": {
+    "alias_of": "agent"
+  },
+  "extended": {
+    "alias_of": "agent"
+  },
+  "agent": {
+    "prompt_limit": 0,
+    "max_tokens": 131072,
+    "reasoning_strength": "high",
+    "reasoning_budget": 0,
+    "min_answer_tokens": 1024,
+    "context_size": 131072,
+    "enable_load_bench": 0,
+    "llama_bench_prompt": 128,
+    "llama_bench_gen": 64,
+    "llama_bench_reps": 1
+  }
 }
