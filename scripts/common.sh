@@ -61,7 +61,7 @@ hf_download_asset() {
   [[ -n "$hf" ]] || { echo 'ERROR: hf CLI is unavailable; run ./serve.sh start to bootstrap dependencies.' >&2; return 2; }
   [[ -n "$repo_id" && -n "$filename" && -n "$revision" ]] || { echo 'ERROR: HF repo, filename, and revision are required.' >&2; return 2; }
   mkdir -p "$local_dir"
-  echo "HF_DOWNLOAD_START repo=$repo_id file=$filename revision=$revision workers=${HF_DOWNLOAD_WORKERS:-32} xet_range_gets=${HF_XET_NUM_CONCURRENT_RANGE_GETS:-32}"
+  echo "HF_DOWNLOAD_START repo=$repo_id file=$filename revision=$revision workers=${HF_DOWNLOAD_WORKERS:-32} xet_range_gets=${HF_XET_NUM_CONCURRENT_RANGE_GETS:-32}" >&2
   local attempt max_attempts="${HF_DOWNLOAD_RETRIES:-5}" rc=0
   for ((attempt=1; attempt<=max_attempts; attempt++)); do
     if HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}" \
@@ -71,7 +71,7 @@ hf_download_asset() {
        HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-60}" \
        "$hf" download "$repo_id" "$filename" \
          --revision "$revision" --local-dir "$local_dir" \
-         --max-workers "${HF_DOWNLOAD_WORKERS:-32}"; then
+         --max-workers "${HF_DOWNLOAD_WORKERS:-32}" >&2; then
       rc=0; break
     else
       rc=$?
@@ -81,7 +81,7 @@ hf_download_asset() {
   done
   (( rc == 0 )) || return "$rc"
   [[ -s "$local_dir/$filename" ]] || { echo "ERROR: HF download completed without a non-empty asset: $local_dir/$filename" >&2; return 3; }
-  echo "HF_DOWNLOAD_DONE repo=$repo_id file=$filename bytes=$(stat -Lc '%s' "$local_dir/$filename")"
+  echo "HF_DOWNLOAD_DONE repo=$repo_id file=$filename bytes=$(stat -Lc '%s' "$local_dir/$filename")" >&2
 }
 
 monotonic_now() { python3 -c 'import time; print(time.monotonic())'; }
