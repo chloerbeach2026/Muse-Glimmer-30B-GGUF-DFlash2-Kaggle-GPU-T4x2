@@ -37,7 +37,7 @@
 1. [Overview](#overview)
 2. [Scope / What this is](#scope--what-this-is)
 3. [What this is not](#what-this-is-not)
-4. [Tested environment](#tested-environment)
+4. [Qualification target environment](#qualification-target-environment)
 5. [Architecture](#architecture)
 6. [Requirements](#requirements)
 7. [Model files](#model-files)
@@ -77,11 +77,8 @@ A personal-serving stack for `Muse-Glimmer-30B` GGUF models:
 ## Scope / What this is
 
 - A **self-hosted reference implementation** and reproducible runbook.
-- A **production-style demo** gateway: deterministic limits, single admission
-  slot, token-bucket rate limiting, opaque request IDs, structured `muse_*`
-  error envelopes, and streaming responses.
-- Optimized for **user-owned compute**: you run it inside your own Kaggle
-  notebook session with a "GPU T4 x2" accelerator and pay with your own quota.
+- An **agent-serving gateway**: one active inference, a bounded wait queue, token-bucket rate limiting, opaque request IDs, structured `muse_*` errors, multi-turn tool-call history, and SSE streaming.
+- Designed for **user-owned compute**: use a persistent Linux GPU host for day-to-day work; Kaggle T4 x2 is a qualification target, not a 24/7 service.
 - Community-reviewable: everything is deterministic and CPU-testable without a
   GPU (see [Reproducibility](#reproducibility)).
 
@@ -93,12 +90,14 @@ A personal-serving stack for `Muse-Glimmer-30B` GGUF models:
 - Not a model-training or fine-tuning toolkit.
 - Not an introduction to `llama.cpp` or GGUF in general.
 
-## Tested environment
+## Qualification target environment
+
+> This is the intended hardware/runtime contract, not evidence that the current fork commit has completed a new Kaggle run. The current commit still needs end-to-end qualification.
 
 | Item | Value |
 | --- | --- |
-| Platform | Kaggle GPU notebook session |
-| Accelerator | NVIDIA T4 x2 (Kaggle "GPU T4 x2") |
+| Platform | Persistent Linux GPU host for daily use; Kaggle notebook for qualification |
+| Qualification accelerator | NVIDIA T4 x2 (Kaggle "GPU T4 x2") |
 | GPUs required | 2, each ≥ 14000 MiB VRAM (`GPU_REQUIRED_COUNT=2`, `GPU_MIN_VRAM_MIB=14000`) |
 | CUDA devices | `CUDA_VISIBLE_DEVICES=0,1` |
 | GPU split | layer-split `1,1`, all layers on GPU (`GPU_SPLIT_MODE=layer`, `GPU_TENSOR_SPLIT=1,1`, `GPU_LAYERS=999`) |
@@ -114,13 +113,13 @@ A personal-serving stack for `Muse-Glimmer-30B` GGUF models:
     |  HTTPS (optional cloudflared quick/named tunnel)
     v
   scripts/auth_proxy.py           127.0.0.1:8090   Bearer auth gateway
-    |                                  |            single admission slot,
-    |                                  |            token-bucket rate limit,
+    |                                  |            one active inference,
+    |                                  |            bounded wait queue,
     v                                  v            SSE-preserving
   llama-server (loopback only)    127.0.0.1:8088   persistent backend
     |
     v
-  GGUF target + DFlash2 draft (attached Kaggle inputs)
+  GGUF target + DFlash2 draft + vision projector (pinned Hugging Face assets)
 ```
 
 Controller entrypoints:
@@ -261,7 +260,7 @@ The gateway (`scripts/auth_proxy.py`) enforces:
 - Bearer auth with `MUSE_API_TOKEN` for every protected endpoint;
 - an endpoint allowlist (`GET /health`, `GET /ready`, `GET /v1/models`,
   `POST /v1/chat/completions`);
-- a single admission slot and a token-bucket rate limit;
+- one active inference with a bounded queue (8 waiting requests / up to 600 seconds) and a token-bucket rate limit;
 - request body size, message-count, and `max_tokens` validation;
 - deterministic `muse_*` JSON error envelopes with opaque request IDs;
 - SSE streaming pass-through with `[DONE]`.
@@ -385,8 +384,7 @@ Streaming is preserved end-to-end: `text/event-stream` chunks carry
 
 ## Busy/concurrency behavior
 
-The demo accepts **one request at a time** (`PARALLEL_SLOTS=1`). While a
-request is in flight you receive:
+Only one generation runs at a time (`PARALLEL_SLOTS=1`). Up to 8 requests can wait for at most 600 seconds. If the queue is full or the wait deadline expires, the gateway returns:
 
 ```text
 HTTP/1.1 429
@@ -456,7 +454,7 @@ runtime dirs (`vendor/`, `models/`, `runs/`).
 | `readiness.sh` reports `SOURCE_MANIFEST` blocker | Modify runtime files → rerun `bash scripts/source-manifest.sh write` to regenerate `SOURCE_MANIFEST.sha256` |
 | `preflight` fails on credentials | Set `MUSE_API_TOKEN` ≥ 32 printable chars; for `named`, also `TUNNEL_TOKEN`/`EXPOSURE_PUBLIC_URL` |
 | `cloudflared` bootstrap failure | Inspect the download/hash error; the pinned installer needs HTTPS access to the official GitHub release. A custom `CLOUDFLARED_BIN` is operator-managed. |
-| Backend fails identity checks | Attach the exact Kaggle inputs listed in [Model files](#model-files) |
+| Backend fails identity checks | Check the pinned HF revision, byte size and SHA-256 in [Model files](#model-files); remove the corrupt cache and start again |
 | `429 muse_demo_busy` | A generation is already running; retry after the `Retry-After` window |
 | First start is slow | Runtime bootstrap + model state preparation is one-time work |
 
