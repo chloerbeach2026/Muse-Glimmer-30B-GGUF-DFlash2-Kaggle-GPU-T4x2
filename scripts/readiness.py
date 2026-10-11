@@ -340,13 +340,15 @@ def probe_token() -> dict:
 
 def probe_cloudflared(mode: str, cfg: dict) -> dict:
     if mode == "proxy":
-        return {"present": False, "required": False}
+        return {"present": False, "required": False, "installable": False}
     binary = cfg.get("CLOUDFLARED_BIN", "cloudflared")
     if "/" in binary:
         present = Path(binary).is_file() and os.access(binary, os.X_OK)
     else:
         present = shutil.which(binary) is not None
-    return {"present": present, "required": True}
+    installer = Path(__file__).resolve().parent / "install_cloudflared.sh"
+    installable = (not present) and binary.endswith("/vendor/bin/cloudflared") and installer.is_file()
+    return {"present": present, "required": True, "installable": installable}
 
 
 def probe_named(cfg: dict) -> dict:
@@ -479,7 +481,10 @@ def assess(facts: dict) -> dict:
     # cloudflared
     cloud = facts.get("cloudflared", {"present": False, "required": False})
     if cloud.get("required") and not cloud.get("present"):
-        blockers.append("CLOUDFLARED_MISSING")
+        if cloud.get("installable"):
+            warnings.append("CLOUDFLARED_WILL_BE_INSTALLED")
+        else:
+            blockers.append("CLOUDFLARED_MISSING")
 
     # named mode prerequisites (exact frozen external.sh contract)
     if mode == "named":
@@ -515,7 +520,7 @@ def assess(facts: dict) -> dict:
         "runtime_fast_path": runtime_fast_path,
         "source_build_fallback": source_build_fallback,
         "api_token": token,
-        "cloudflared": ("PRESENT" if cloud.get("present") else ("NOT_REQUIRED" if not cloud.get("required") else "MISSING")),
+        "cloudflared": ("PRESENT" if cloud.get("present") else ("INSTALLABLE" if cloud.get("installable") else ("NOT_REQUIRED" if not cloud.get("required") else "MISSING"))),
     }
 
 
