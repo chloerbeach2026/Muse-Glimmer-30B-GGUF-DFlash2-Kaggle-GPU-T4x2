@@ -266,12 +266,27 @@ def main() -> int:
     sys.path.insert(0, str(ROOT / "scripts"))
     import demo_policy as P  # noqa: E402
 
-    check("gateway single admission slot", P.MAX_ACTIVE_INFERENCE == 1)
-    check("gateway zero queue", P.MAX_QUEUED_INFERENCE == 0)
+    check("gateway sequential inference with bounded queue", P.MAX_ACTIVE_INFERENCE == 1 and P.MAX_QUEUED_INFERENCE > 0)
+    check("gateway bounded agent queue", P.MAX_QUEUED_INFERENCE == 8 and P.QUEUE_WAIT_SECONDS == 600.0)
     check("gateway busy retry-after", P.BUSY_RETRY_AFTER == "5")
     check("gateway error codes", P.ERROR_BUSY == "muse_demo_busy"
           and P.ERROR_AUTH_REQUIRED == "muse_auth_required"
           and P.ERROR_RATE_LIMITED == "muse_rate_limited")
+    check("gateway agent output ceiling is full model context", P.MAX_TOKENS == 131072 and P.DEFAULT_MAX_TOKENS == 131072)
+    check("gateway accepts tool history and developer messages",
+          P.validate_payload({"messages":[
+              {"role":"assistant","content":None,"tool_calls":[
+                  {"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}
+              ]},
+              {"role":"tool","tool_call_id":"call_1","content":"ok"},
+              {"role":"developer","content":"Be careful"}
+          ]})[0])
+    check("gateway full agent serving uses pinned HF sources and context",
+          "MODEL_SOURCE_MODE=hf" in cfg
+          and "CONTEXT_SIZE=131072" in cfg
+          and "MODEL_HF_REVISION=16f5840bef28e4018cf41a7ec9709d6fd89176f6" in cfg
+          and "HF_XET_NUM_CONCURRENT_RANGE_GETS=32" in cfg
+          and "DFLASH_HF_REVISION=43c7eadd41352a299ea8e0a36b3157978dd63596" in cfg)
     check("gateway /ready public route allowed", P.ROUTE_ALLOW is None)
 
     import auth_proxy  # noqa: E402
