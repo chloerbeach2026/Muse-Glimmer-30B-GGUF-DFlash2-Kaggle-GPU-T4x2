@@ -1,4 +1,4 @@
-# Muse-Glimmer-30B GGUF + DFlash2 trên Kaggle T4x2
+# Muse-Glimmer-30B — Personal Agent Server (chỉ Hugging Face)
 > 🌐 Language / Ngôn ngữ: [English](README.md) | **Tiếng Việt**
 
 ![Release](https://img.shields.io/badge/release-v1.0.0-blue)
@@ -11,7 +11,7 @@
 ![OpenAI compatible](https://img.shields.io/badge/API-OpenAI--compatible-606060)
 ![Self-hosted](https://img.shields.io/badge/reference-self--hosted-606060)
 
-**Stack inference tự host bằng `llama.cpp` cho Muse-Glimmer-30B GGUF, được tăng tốc bằng DFlash2 speculative decoding trên Kaggle NVIDIA T4 x2 và cung cấp qua API gateway có xác thực tương thích OpenAI.**
+**Server inference Muse-Glimmer-30B tự host cho lập trình agentic dài hạn qua client tương thích OpenAI: tải asset từ HF có pin revision, DFlash2, tool-call history, Context mục tiêu tối đa, hàng đợi hữu hạn và Cloudflare Quick/Named Tunnel tùy chọn.**
 
 > **Đây không phải repository upstream của model Muse-Glimmer-30B.**
 > Repository này cung cấp serving stack tái lập được, runtime đã pin, authenticated gateway, Kaggle production notebook và operator workflow để chạy model trên compute của chính bạn.
@@ -22,10 +22,10 @@
 - **Draft model:** `Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf`
 - **Inference runtime:** `llama.cpp` với CUDA
 - **Tăng tốc:** DFlash2 speculative decoding
-- **Compute đã qualification:** Kaggle NVIDIA **T4 x2**
+- **Compute mục tiêu:** NVIDIA **T4 x2** (cần qualification lại sau các thay đổi này)
 - **API:** chat completions tương thích OpenAI với SSE streaming
 - **Lớp truy cập:** gateway xác thực bằng Bearer token
-- **Public transport tùy chọn:** Cloudflare Quick Tunnel
+- **Public transport tùy chọn:** Cloudflare Quick Tunnel hoặc Named Tunnel có token
 
 > **Repository này không cung cấp dịch vụ inference hosted dùng chung.**
 > **Người dùng tự chạy stack trên tài khoản/hạ tầng Kaggle của mình và tự sử dụng GPU quota của mình.**
@@ -135,44 +135,23 @@ Các entrypoint điều khiển:
 
 ## Yêu cầu
 
-- Tài khoản Kaggle và phiên notebook với accelerator **GPU T4 x2**.
-- `MUSE_API_TOKEN` có **tối thiểu 32 ký tự in được** (secret của riêng bạn,
-  gateway chỉ dùng cho Bearer auth).
-- `cloudflared` trong `PATH` khi dùng public exposure quick/named
-  (`EXPOSURE_MODE=quick` là mặc định).
-- Các Kaggle inputs đính kèm (xem [Tệp mô hình](#tệp-mô-hình)).
-- Không cần GPU, tunnel, hay download mô hình để chạy bộ test deterministic
-  (xem [Tái lập](#tái-lập)).
+- Linux x86-64, Python 3.12, Bash, Git, CMake/build tools, CUDA toolkit và layout GPU theo `config/default.env` (hiện cần 2 GPU, mỗi GPU ít nhất 14.000 MiB; mục tiêu qualification là Kaggle T4 x2).
+- Internet để tải asset từ Hugging Face và clone/build llama.cpp từ commit đã pin trong lần chạy đầu.
+- `MUSE_API_TOKEN` riêng có ít nhất 32 k## Model assets (chỉ tải từ Hugging Face)
 
-## Tệp mô hình
+Server từ chối dùng weights gắn từ Kaggle và tải target, draft DFlash2, vision projector từ revision Hugging Face bất biến. Mỗi asset được xác minh theo dung lượng byte và SHA-256 trước khi serving.
 
-Hãy đính kèm **chính xác các Kaggle resource dưới đây**. Các tên này không phải gợi ý tìm kiếm chung; chúng xác định đúng public input được canonical Kaggle production notebook sử dụng.
+| Asset | Repository HF | Revision đã pin | File | Dung lượng mong đợi | SHA-256 |
+| --- | --- | --- | --- | ---: | --- |
+| Target | `bartowski/Muse-Glimmer-30B-GGUF` | `16f5840bef28e4018cf41a7ec9709d6fd89176f6` | `Muse-Glimmer-30B-Q4_K_M.gguf` | 17.306.324.000 B | `0d3fc85f61d10fdc84072f0bba6005d61c1ac5605a2627b0fd5ea4ff8194c384` |
+| Draft DFlash2 | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `dflash-Muse-Glimmer-30B-Q4_K_M.gguf` | 1.631.208.128 B | `b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef` |
+| Vision projector | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `mmproj-Muse-Glimmer-30B-Q4_K_M.gguf` | 1.400.328.928 B | `f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6` |
 
-| Vai trò | Loại Kaggle | Resource | Variation/version bắt buộc | File bắt buộc | Kích thước | SHA-256 |
-| --- | --- | --- | --- | --- | ---: | --- |
-| Target (chính) | Kaggle Model | [`dangkhoa2016/bartowski-muse-glimmer-30b-gguf`](https://www.kaggle.com/models/dangkhoa2016/bartowski-muse-glimmer-30b-gguf/Gguf/q4-k-m/1) | **GGUF / `q4-k-m` / `1`** | `Muse-Glimmer-30B-Q4_K_M.gguf` | 17.306.324.000 B | `0d3fc85f61d10fdc84072f0bba6005d61c1ac5605a2627b0fd5ea4ff8194c384` |
-| DFlash2 draft | Kaggle Model | [`dangkhoa2016/incoai-muse-glimmer-30b-dflash2-gguf`](https://www.kaggle.com/models/dangkhoa2016/incoai-muse-glimmer-30b-dflash2-gguf/Gguf/q4-k-m/1) | **GGUF / `q4-k-m` / `1`** | `Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf` | 1.645.657.280 B | `93dbfb6f88e4645dec1347cf93f9d6fc80b90d413038722385b2a8e53565c949` |
-| llama.cpp runtime | Kaggle Dataset | [`dangkhoa2016/muse-glimmer-30b-dflash2-llama-runtime`](https://www.kaggle.com/datasets/dangkhoa2016/muse-glimmer-30b-dflash2-llama-runtime) | dataset | cây CUDA runtime dựng sẵn đã pin | — | được runtime manifest xác minh |
+Politika download: `HF_DOWNLOAD_WORKERS=32`, `HF_XET_NUM_CONCURRENT_RANGE_GETS=32`, Xet high-performance, retry và resume qua Hub cache. Cấu hình nhắm tới 32 Xet range request đồng thời cho mỗi file và tối đa 32 worker tải file; khi tải một file đơn lẻ, không có nghĩa 32 worker file đều hoạt động.
 
-> **Quan trọng:** production demo này phải dùng variation DFlash2 chuyên biệt **GGUF / `q4-k-m` / `1`**. Variation này chỉ mount draft Q4_K_M cần thiết (~1,65 GB). Variation `default` là legacy all-in-one bundle chứa Q4_K_M, Q8_0 và BF16 (tổng khoảng 10 GB), vì vậy không nên attach `default` cho canonical production run.
+Không commit model vào Git. Cache local `models/` chỉ được tái sử dụng sau khi xác minh exact identity. Cache thiếu, ngắn hoặc hỏng sẽ được tải lại từ revision HF đã pin; server không start nếu size hoặc SHA-256 không khớp.
 
-### Cách đính kèm trên Kaggle
-
-1. Mở Kaggle notebook và chọn **Add Input**.
-2. Thêm target **Model** từ link trực tiếp ở trên và chọn **GGUF → `q4-k-m` → version `1`**.
-3. Thêm DFlash2 **Model** và chọn **GGUF → `q4-k-m` → version `1`**.
-4. Thêm llama.cpp runtime **Dataset**.
-5. Giữ cả ba input được attach khi dùng **Restart Session → Run All**.
-
-Kaggle mount các canonical selection theo dạng dưới đây (outer mount layout có thể thay đổi):
-
-```text
-/kaggle/input/models/dangkhoa2016/bartowski-muse-glimmer-30b-gguf/gguf/q4-k-m/1/Muse-Glimmer-30B-Q4_K_M.gguf
-/kaggle/input/models/dangkhoa2016/incoai-muse-glimmer-30b-dflash2-gguf/gguf/q4-k-m/1/Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf
-/kaggle/input/datasets/dangkhoa2016/muse-glimmer-30b-dflash2-llama-runtime
-```
-
-Kaggle có thể thay đổi lớp mount bên ngoài, vì vậy notebook và runtime chủ động tìm đệ quy các input lồng nhau. Backend đọc target model đính kèm **tại chỗ** và resolve draft theo exact filename. Serving vẫn là exact: cả hai model identity đều được kiểm lại theo kích thước và SHA-256 trước mỗi lần start.
+gle có thể thay đổi lớp mount bên ngoài, vì vậy notebook và runtime chủ động tìm đệ quy các input lồng nhau. Backend đọc target model đính kèm **tại chỗ** và resolve draft theo exact filename. Serving vẫn là exact: cả hai model identity đều được kiểm lại theo kích thước và SHA-256 trước mỗi lần start.
 
 ## Xác minh toàn vẹn / hash
 
