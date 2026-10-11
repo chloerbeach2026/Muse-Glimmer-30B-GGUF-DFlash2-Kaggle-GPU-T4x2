@@ -33,6 +33,8 @@ SENSITIVE_FORWARD_HEADERS = {"authorization", "proxy-authorization"}
 CORS_RESPONSE_PREFIX = "access-control-"
 READY_PUBLIC_PATH = "/ready"
 READY_BACKEND_PATH = "/health"
+MODELS_PUBLIC_PATH = "/v1/models"
+MUSE_MODEL_ID = "muse-glimmer-30B"
 
 
 def valid_secret(secret: str) -> bool:
@@ -291,6 +293,59 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
         finally:
             conn.close()
 
+    def _serve_models(self, request_id: str, started: float) -> None:
+        """Serve ``GET /v1/models`` with the gateway's effective limits.
+
+        Instead of forwarding the backend's raw ``/v1/models`` response (which
+        does not carry the effective Context/output budget the gateway is
+        actually enforcing), the gateway returns a single canonical model
+        entry that exposes the effective Context, the max output tokens, the
+        default reasoning strength, and the supported capabilities. This lets
+        OpenCode IDE / Hermes Agent / Claude Code + OmniRoute configure their
+        local Context/output limits without having to send a probe request
+        first or parse the ``X-Muse-*`` response headers on every call.
+        """
+        effective_context = self.server.effective_context_size
+        max_output = self.server.max_output_tokens
+        body = {
+            "object": "list",
+            "data": [
+                {
+                    "id": MUSE_MODEL_ID,
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "muse-glimmer",
+                    # Non-standard but OpenAI-compatible extensions that
+                    # carry the runtime-effective limits the gateway clamps
+                    # client requests to.
+                    "context_window": effective_context,
+                    "max_output_tokens": max_output,
+                    "reasoning_strength_default": P.DEFAULT_REASONING_STRENGTH,
+                    "capabilities": ["tool_calls", "streaming", "vision", "multi_turn"],
+                    # Hints for agent harnesses that want to auto-tune.
+                    "config": {
+                        "parallel_slots": 1,
+                        "admission_queue_size": self.server.queue_size,
+                        "idle_timeout_seconds": self.server.idle_timeout,
+                        "hard_deadline_seconds": self.server.hard_deadline,
+                    },
+                }
+            ],
+        }
+        payload = json.dumps(body, separators=(",", ":")).encode("utf-8") + b"\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("X-Muse-Effective-Context-Size", str(effective_context))
+        self.send_header("X-Muse-Max-Output-Tokens", str(max_output))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(payload)
+        self.close_connection = True
+        self.server.telemetry.note_completed(200, (time.monotonic() - started) * 1000, None, "done")
+
     def _proxy(self) -> None:
         if not self._authorized():
             supplied = self.headers.get("Authorization", "")
@@ -382,6 +437,12 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
 
         if self.command == "GET" and target.path == READY_PUBLIC_PATH:
             self._serve_ready(request_id, started, admitted_here)
+            return
+
+        # GET /v1/models is served by the gateway so the effective Context/output
+        # budget and agent-facing metadata are visible without parsing headers.
+        if self.command == "GET" and target.path == MODELS_PUBLIC_PATH:
+            self._serve_models(request_id, started)
             return
 
         # Validate JSON payload for chat/completions before forwarding.

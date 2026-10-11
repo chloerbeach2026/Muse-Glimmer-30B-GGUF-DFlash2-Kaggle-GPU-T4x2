@@ -268,7 +268,7 @@ def main() -> int:
     import auth_proxy  # noqa: E402
 
     check("gateway sequential inference with bounded queue", P.MAX_ACTIVE_INFERENCE == 1 and P.MAX_QUEUED_INFERENCE > 0)
-    check("gateway bounded agent queue", P.MAX_QUEUED_INFERENCE == 8 and P.QUEUE_WAIT_SECONDS == 600.0)
+    check("gateway bounded agent queue", P.MAX_QUEUED_INFERENCE == 16 and P.QUEUE_WAIT_SECONDS == 1200.0)
     check("gateway busy retry-after", P.BUSY_RETRY_AFTER == "5")
     check("gateway error codes", P.ERROR_BUSY == "muse_demo_busy"
           and P.ERROR_AUTH_REQUIRED == "muse_auth_required"

@@ -27,6 +27,12 @@ from typing import Any, Optional
 
 # ---------------------------------------------------------------------------
 # Public contract constants (frozen public behavior).
+#
+# Tuned for sustained agentic coding through OpenAI-compatible clients (Hermes
+# Agent, Claude Code + OmniRoute, OpenCode IDE). MAX_TOOL_CALLS and the
+# admission queue are sized so a long multi-step tool loop can carry a large
+# transcript without being rejected at the gateway, while still keeping a
+# single-GPU-resident model safe from uncontrolled concurrency.
 # ---------------------------------------------------------------------------
 MAX_BODY_BYTES = 33554432
 MAX_MESSAGES = 256
@@ -35,20 +41,24 @@ MAX_SINGLE_CONTENT = 25000000
 DEFAULT_MAX_TOKENS = 131072
 MIN_MAX_TOKENS = 1
 MAX_TOKENS = 131072
-MAX_TOOL_CALLS = 128
+MAX_TOOL_CALLS = 256
 DEFAULT_REASONING_STRENGTH = "high"
 
+# Connect/idle/hard timeouts. The hard deadline is the upper bound a single
+# inference request can occupy the admission slot; it must comfortably exceed
+# the longest realistic agent tool loop (refactor across many files, long
+# reasoning phase at strength=high).
 CONNECT_TIMEOUT = 15.0
-IDLE_TIMEOUT = 180.0
-HARD_DEADLINE = 3600.0
+IDLE_TIMEOUT = 600.0
+HARD_DEADLINE = 7200.0
 
 RATE_CAPACITY = 30
 RATE_REFILL_PER_SEC = 1.0
 RATE_COST = 1
 
 MAX_ACTIVE_INFERENCE = 1
-MAX_QUEUED_INFERENCE = 8
-QUEUE_WAIT_SECONDS = 600.0
+MAX_QUEUED_INFERENCE = 16
+QUEUE_WAIT_SECONDS = 1200.0
 BUSY_RETRY_AFTER = "5"
 
 TELEMETRY_SCHEMA_VERSION = 1
