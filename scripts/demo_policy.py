@@ -35,7 +35,11 @@ from typing import Any, Optional
 # single-GPU-resident model safe from uncontrolled concurrency.
 # ---------------------------------------------------------------------------
 MAX_BODY_BYTES = 33554432
-MAX_MESSAGES = 256
+# Sustained agent sessions (Hermes, Claude Code + OmniRoute, OpenCode IDE) can
+# accumulate 300+ messages (tool calls + results) while still sitting far below
+# the 131072-token context; the aggregate content limit below remains the real
+# resource bound, so the per-request message count is generous but finite.
+MAX_MESSAGES = 512
 MAX_AGGREGATE_CONTENT = 30000000
 MAX_SINGLE_CONTENT = 25000000
 DEFAULT_MAX_TOKENS = 131072
@@ -47,10 +51,18 @@ DEFAULT_REASONING_STRENGTH = "high"
 # Connect/idle/hard timeouts. The hard deadline is the upper bound a single
 # inference request can occupy the admission slot; it must comfortably exceed
 # the longest realistic agent tool loop (refactor across many files, long
-# reasoning phase at strength=high).
+# reasoning phase at strength=high) including a full 131072-token output
+# budget at T4-class decode speed, so it is sized at four hours.
 CONNECT_TIMEOUT = 15.0
 IDLE_TIMEOUT = 600.0
-HARD_DEADLINE = 7200.0
+HARD_DEADLINE = 14400.0
+
+# While streaming an SSE response through Cloudflare (Quick or Named Tunnel),
+# the edge drops connections that see no bytes for roughly 100 seconds. Long
+# prompt prefill (a 131072-token agent transcript) can be silent for minutes,
+# so the gateway injects SSE comment lines (": keepalive") that every
+# standards-compliant SSE client ignores while keeping the edge alive.
+SSE_KEEPALIVE_SECONDS = 30.0
 
 RATE_CAPACITY = 30
 RATE_REFILL_PER_SEC = 1.0

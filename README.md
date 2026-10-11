@@ -150,7 +150,7 @@ The server refuses Kaggle-mounted weights and downloads exact target, DFlash2 dr
 | DFlash2 draft | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `dflash-Muse-Glimmer-30B-Q4_K_M.gguf` | 1,631,208,128 B | `b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef` |
 | Vision projector | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `mmproj-Muse-Glimmer-30B-Q4_K_M.gguf` | 1,400,328,928 B | `f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6` |
 
-Download policy: `HF_DOWNLOAD_WORKERS=32`, `HF_XET_NUM_CONCURRENT_RANGE_GETS=32`, Xet high-performance mode, retry and native Hub cache resume. These settings target 32 concurrent Xet range requests per file plus up to 32 file workers; they do not promise that all 32 file workers are active while downloading a single file.
+Download policy: `HF_DOWNLOAD_WORKERS=32`, `HF_XET_NUM_CONCURRENT_RANGE_GETS=32`, Xet high-performance mode, retry and native Hub cache resume. These settings target 32 concurrent Xet range requests per file plus up to 32 file workers; they do not promise that all 32 file workers are active while downloading a single file. The downloader always uses the official `https://huggingface.co` endpoint (inherited `HF_ENDPOINT` mirror overrides are ignored with a warning) and keeps Xet concurrent range downloads enabled (`HF_HUB_DISABLE_XET` cannot silently weaken the 32-connection path). The pinned per-file SHA-256 remains the final integrity authority.
 
 No model files are committed to Git. A local `models/` cache is reused only after exact identity verification. A missing, truncated or corrupted cache is re-downloaded from the pinned HF revision; the server will not start if size or SHA-256 differs.
 
@@ -196,6 +196,19 @@ export MUSE_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe
 
 The first start downloads the target, DFlash2 draft and projector from Hugging Face, builds the pinned CUDA llama.cpp runtime if not cached, and attempts `CONTEXT_SIZE=131072`. On startup resource failure, it may fall back through smaller Context values; the effective Context/output limit is shown by status and response headers. Subsequent starts reuse files only after size/hash verification.
 
+### Agent-serving flags applied by `serve.sh`
+
+The persistent backend is started with explicit sustained-agentic-work guarantees, each added only when the pinned runtime advertises the flag (so a runtime update can never break startup):
+
+| Flag | Value | Purpose |
+| --- | --- | --- |
+| `-c` / `-np` | `131072` / `1` | Full model Context in a single slot for one agent at a time |
+| `-n` | `131072` | Explicit maximum output-token budget per request |
+| `-fa` | `on` | Flash attention — required for the quantized V-cache and cheap attention at 131k Context |
+| `--cache-type-k` / `--cache-type-v` | `q8_0` | Quantized KV cache so the full Context fits the T4 x2 budget |
+| `--cache-reuse` | `256` | Recycles cached KV chunks across agent turns after prompt divergence (`KV_CACHE_REUSE`) |
+| `--jinja` | — | Native tool-call rendering for agent clients |
+
 For an actual long-running personal service, run on a persistent Linux GPU host; Kaggle is a qualification/runtime session and does not guarantee 24/7 uptime. The external endpoint must remain behind the authenticated gateway.
 ### Optional systemd supervision (persistent Linux host)
 
@@ -226,7 +239,10 @@ Defaults live in `config/default.env`; profile values in `config/profiles.json` 
 | `CONTEXT_SIZE` / `MAX_TOKENS` | `131072` / `131072` | Desired Context and API output ceiling; actual values may be reduced after a GPU resource startup failure |
 | `REASONING_STRENGTH` | `high` | Model chat-template reasoning setting |
 | `PARALLEL_SLOTS` | `1` | One inference at a time; other requests wait in a bounded queue |
-| `ADMISSION_QUEUE_SIZE` / `ADMISSION_QUEUE_WAIT_SECONDS` | `8` / `600` | Maximum queued requests / maximum wait |
+| `ADMISSION_QUEUE_SIZE` / `ADMISSION_QUEUE_WAIT_SECONDS` | `16` / `1200` | Maximum queued requests / maximum wait |
+| `GATEWAY_IDLE_TIMEOUT` / `GATEWAY_HARD_DEADLINE` | `600` / `14400` | Backend silent-read bound / total per-request bound (4 hours, sized for a full 131072-token output at T4 speed) |
+| `GATEWAY_SSE_KEEPALIVE_SECONDS` | `30` | SSE ": keepalive" comment injection while the backend is silent; keeps Cloudflare's ~100 s edge idle timeout from killing long prefills. `0` disables |
+| `MAX_MESSAGES` | `512` | Per-request transcript history bound (aggregate content cap still applies) |
 | `EXPOSURE_MODE` | `quick` | `quick`, `named`, or `proxy` (bring your own transport) |
 | `MUSE_API_TOKEN` | — | Private Bearer secret, at least 32 printable characters |
 | `TUNNEL_TOKEN` / `EXPOSURE_PUBLIC_URL` | — | Named Tunnel credential and preconfigured HTTPS hostname |
@@ -404,6 +420,13 @@ Repeated admission is enforced by an exact slot lock and is covered by the
 deterministic test suite. Rate limits, payload limits, and timeouts are also
 enforced by the gateway before any request reaches the backend.
 
+While an SSE response is being streamed, the gateway injects `: keepalive`
+comment lines whenever the backend is silent (default every 30 s,
+`GATEWAY_SSE_KEEPALIVE_SECONDS`). SSE comment lines are ignored by every
+spec-compliant client, so tool-loop streaming through Cloudflare Quick and
+Named Tunnels survives long silent prompt prefills that would otherwise hit
+the Cloudflare edge idle timeout after ~100 seconds.
+
 ## Optional Cloudflare tunnel
 
 The repository bootstraps the pinned `cloudflared 2026.10.0` binary and checks its official architecture-specific SHA-256 before executing it. Both modes expose only the authenticated gateway, never backend port 8088.
@@ -431,7 +454,7 @@ export EXPOSURE_PUBLIC_URL='https://llm.example.com'
 ./external.sh endpoint
 ```
 
-`expose.sh` writes the Named Tunnel token into a mode-`0600` runtime-state file and deletes it during shutdown/failed startup. The hostname, DNS and tunnel route must be configured in Cloudflare; a token alone cannot create them.
+`expose.sh` writes the Named Tunnel token into a mode-`0600` runtime-state file and deletes it during shutdown/failed startup. The hostname, DNS and tunnel route must be configured in Cloudflare; a token alone cannot create them. Before launching `cloudflared`, the gateway validates that `TUNNEL_TOKEN` really is the base64 tunnel credential (it must decode to the JSON fields `a`, `t`, `s`), so a pasted tunnel name or ID fails fast with a clear operator error instead of an opaque connection failure. Startup then waits for the `Registered tunnel connection` marker before probing the public URL, and the named-mode public readiness window defaults to 120 s (`EXPOSURE_NAMED_READY_TIMEOUT`) to absorb DNS propagation.
 
 For either mode, public traffic passes through Bearer auth. Never expose `llama-server` directly.
 ## Shutdown / cleanup

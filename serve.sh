@@ -101,6 +101,10 @@ assert_persistent_contract() {
   [[ "$PARALLEL_SLOTS" == '1' ]] || { echo 'ERROR: 1.0.0 inference freeze requires PARALLEL_SLOTS=1.' >&2; exit 4; }
   [[ "$DFLASH_DRAFT_N_MAX" == '15' ]] || { echo 'ERROR: 1.0.0 inference freeze requires DFLASH_DRAFT_N_MAX=15.' >&2; exit 4; }
   [[ "${REASONING_PRESERVE:-0}" == '0' ]] || { echo 'ERROR: reasoning-preserve remains frozen off.' >&2; exit 4; }
+  [[ "${KV_CACHE_REUSE:-256}" =~ ^[0-9]+$ ]] || {
+    echo "ERROR: KV_CACHE_REUSE must be a non-negative integer (got '${KV_CACHE_REUSE:-unset}')." >&2
+    exit 4
+  }
   [[ "$LLAMA_CPP_EXPECTED_COMMIT" == "$CANONICAL_RUNTIME_COMMIT" ]] || {
     echo "ERROR: exact z-lab runtime commit is frozen to $CANONICAL_RUNTIME_COMMIT." >&2
     exit 4
@@ -332,9 +336,33 @@ start_server() {
       exit 4
     }
   done
+  # Explicit agent-serving guarantees (added conditionally so an older/newer
+  # pinned runtime can never be broken by an unsupported flag spelling):
+  #   1. Flash attention ON. Required for the q8_0 V-cache to be honored and
+  #      for cheap attention at 131072 Context. Without it the V-cache quant
+  #      may be silently ignored (higher VRAM) or refused at startup.
+  #   2. --cache-reuse: reuse cached KV chunks across agent turns after
+  #      prefix divergence, keeping multi-step tool loops fast.
+  #   3. -n "$MAX_TOKENS": make the maximum output-token budget explicit
+  #      instead of relying on the backend's internal default.
+  local -a agent_flags=()
+  if grep -Eq -- '--flash-attn[[:space:]]*(\[[a-z|]+\]|[a-z]+\|[a-z]+)' <<<"$server_help"; then
+    agent_flags+=(-fa on)
+  elif grep -q -- '--flash-attn' <<<"$server_help"; then
+    agent_flags+=(-fa)
+  else
+    echo 'WARNING: pinned llama-server does not advertise --flash-attn; relying on runtime defaults.' >&2
+  fi
+  if grep -Eq -- '--cache-reuse' <<<"$server_help"; then
+    agent_flags+=(--cache-reuse "${KV_CACHE_REUSE:-256}")
+  else
+    echo 'WARNING: pinned llama-server does not advertise --cache-reuse; KV chunk reuse disabled.' >&2
+  fi
   local -a server_cmd=(
     "$server_bin" -m "$model_path" -a muse-glimmer-30B -c "$CONTEXT_SIZE" -np "$PARALLEL_SLOTS"
     -t "$threads" -tb "$batch_threads" -b "$BATCH_SIZE" -ub "$UBATCH_SIZE"
+    -n "$MAX_TOKENS"
+    "${agent_flags[@]}"
     "${gpu_args[@]}"
     --host "$SERVER_HOST" --port "$SERVER_PORT" --jinja
     --temp "$TEMPERATURE" --top-p "$TOP_P" --top-k "$TOP_K"
@@ -432,7 +460,8 @@ PY
       else
         echo "CONTEXT_AUTO_FALLBACK=NOT_NEEDED"
       fi
-      echo 'Persistent server STARTED / READY.'
+      echo 'Persistent server STARTED / READY (flash-attn, KV q8_0, cache-reuse, explicit max output).'
+      echo "AGENT_SERVE_FLAGS=${agent_flags[*]:-none}"
       print_status
       return 0
     else

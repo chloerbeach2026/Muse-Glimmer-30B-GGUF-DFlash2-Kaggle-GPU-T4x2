@@ -46,6 +46,39 @@ if not ok:
 PY
 }
 
+# A Cloudflare Named Tunnel token is a base64url-encoded JSON object with the
+# fields "a" (account tag), "t" (tunnel ID) and "s" (secret). Validate the
+# shape before launching cloudflared so a pasted dashboard string, a DNS-route
+# name, or a truncated copy fails fast with a clear operator error instead of
+# an opaque cloudflared connection failure minutes later.
+validate_tunnel_token(){
+  TUNNEL_TOKEN="${TUNNEL_TOKEN:-}" python3 - <<'PY'
+import base64,binascii,json,os,sys
+raw=os.environ.get('TUNNEL_TOKEN','').strip()
+if not raw:
+    print('ERROR: TUNNEL_TOKEN is required for EXPOSURE_MODE=named', file=sys.stderr)
+    raise SystemExit(52)
+if len(raw) > 4096:
+    print('ERROR: TUNNEL_TOKEN is implausibly long; paste the tunnel token exactly as shown by Cloudflare', file=sys.stderr)
+    raise SystemExit(52)
+padded=raw+'='*(-len(raw)%4)
+try:
+    decoded=base64.urlsafe_b64decode(padded.encode('ascii'))
+except (binascii.Error, UnicodeEncodeError, ValueError):
+    print('ERROR: TUNNEL_TOKEN must be the base64 tunnel token from Cloudflare (not a tunnel name, ID, or JSON you typed yourself)', file=sys.stderr)
+    raise SystemExit(52)
+try:
+    fields=json.loads(decoded.decode('utf-8'))
+except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+    print('ERROR: TUNNEL_TOKEN does not decode to a Cloudflare tunnel credential JSON', file=sys.stderr)
+    raise SystemExit(52)
+if not isinstance(fields, dict) or not all(isinstance(fields.get(k), str) and fields.get(k) for k in ('a','t','s')):
+    print('ERROR: TUNNEL_TOKEN JSON is missing required fields a/t/s; regenerate it with `cloudflared tunnel token <tunnel>`', file=sys.stderr)
+    raise SystemExit(52)
+print('TUNNEL_TOKEN_SHAPE=OK')
+PY
+}
+
 probe_url(){
   local mode="$1" url="$2"
   if [[ -n "$LOCAL_PROBE_BIN" ]]; then
@@ -200,6 +233,42 @@ PY
   done
 }
 
+# Named tunnels are only usable once cloudflared has registered at least one
+# edge connection. Waiting for that marker first separates "tunnel cannot
+# reach the Cloudflare edge (bad token/quota/network)" from "public hostname
+# not reachable" and gives the subsequent public probe a fair chance.
+wait_named_registered(){
+  local deadline now registered
+  local register_timeout="${EXPOSURE_NAMED_REGISTER_TIMEOUT:-120}"
+  deadline="$(python3 - "$register_timeout" <<'PY'
+import sys,time; print(time.monotonic()+float(sys.argv[1]))
+PY
+)"
+  while :; do
+    [[ -n "$TUNNEL_PID" ]] && kill -0 "$TUNNEL_PID" 2>/dev/null || {
+      echo 'ERROR: cloudflared exited before registering the Named Tunnel with the edge' >&2
+      tail -n 60 "$TUNNEL_LOG" >&2 2>/dev/null || true
+      return 57
+    }
+    registered="$(grep -c 'Registered tunnel connection' "$TUNNEL_LOG" 2>/dev/null || true)"
+    if (( registered > 0 )); then
+      echo "NAMED_TUNNEL_REGISTERED connections=$registered"
+      return 0
+    fi
+    now="$(python3 - <<'PY'
+import time; print(time.monotonic())
+PY
+)"
+    python3 - "$now" "$deadline" <<'PY' || {
+import sys
+raise SystemExit(0 if float(sys.argv[1]) < float(sys.argv[2]) else 1)
+PY
+      echo 'ERROR: timed out waiting for Named Tunnel edge registration' >&2; tail -n 60 "$TUNNEL_LOG" >&2 2>/dev/null || true; return 58;
+    }
+    sleep .2
+  done
+}
+
 wait_public_auth(){
   local public_url="$1" timeout deadline now unauth auth
   local seen_unauth_401=0 seen_auth_2xx=0
@@ -208,7 +277,7 @@ wait_public_auth(){
 
   timeout="$PUBLIC_READY_TIMEOUT"
   if [[ -z "$timeout" ]]; then
-    if [[ "$MODE" == quick ]]; then timeout=90; else timeout="$READY_TIMEOUT"; fi
+    if [[ "$MODE" == quick ]]; then timeout=90; else timeout="${EXPOSURE_NAMED_READY_TIMEOUT:-120}"; fi
   fi
   deadline="$(python3 - "$timeout" <<'PY'
 import sys,time; print(time.monotonic()+float(sys.argv[1]))
@@ -407,6 +476,7 @@ PY
     --queue-wait-seconds "${ADMISSION_QUEUE_WAIT_SECONDS:-600}" \
     --idle-timeout "${GATEWAY_IDLE_TIMEOUT:-180}" \
     --hard-deadline "${GATEWAY_HARD_DEADLINE:-3600}" \
+    --sse-keepalive-seconds "${GATEWAY_SSE_KEEPALIVE_SECONDS:-30}" \
     >>"$PROXY_LOG" 2>&1 &
   PROXY_PID=$!
   wait_local_proxy || return $?
@@ -439,13 +509,15 @@ PY
     fi
     public_url="$(state_value PUBLIC_URL "$public_gate")"
     [[ -n "$public_url" ]] || { echo 'ERROR: named public URL gate returned no canonical URL' >&2; return 53; }
+    validate_tunnel_token || return $?
     # Keep the named-tunnel credential out of argv and cloudflared's process environment.
     install -m 600 /dev/null "$TUNNEL_TOKEN_FILE"
     printf '%s' "$tunnel_token" > "$TUNNEL_TOKEN_FILE"
     chmod 600 "$TUNNEL_TOKEN_FILE"
     unset TUNNEL_TOKEN tunnel_token
-    NO_AUTOUPDATE=true nohup "$CLOUDFLARED_BIN" tunnel run --token-file "$TUNNEL_TOKEN_FILE" >>"$TUNNEL_LOG" 2>&1 &
+    NO_AUTOUPDATE=true nohup "$CLOUDFLARED_BIN" --no-autoupdate tunnel run --token-file "$TUNNEL_TOKEN_FILE" >>"$TUNNEL_LOG" 2>&1 &
     TUNNEL_PID=$!
+    wait_named_registered || return $?
   fi
 
   python3 "$ROOT/scripts/exposure_state.py" begin --state "$STATE_FILE" --mode "$MODE" \

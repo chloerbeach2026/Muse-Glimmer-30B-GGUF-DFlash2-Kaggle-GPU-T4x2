@@ -61,10 +61,23 @@ hf_download_asset() {
   [[ -n "$hf" ]] || { echo 'ERROR: hf CLI is unavailable; run ./serve.sh start to bootstrap dependencies.' >&2; return 2; }
   [[ -n "$repo_id" && -n "$filename" && -n "$revision" ]] || { echo 'ERROR: HF repo, filename, and revision are required.' >&2; return 2; }
   mkdir -p "$local_dir"
+  # Weights may come from the official Hugging Face endpoint only. Ignore any
+  # inherited HF_ENDPOINT override (mirrors) and pin the official host; the
+  # pinned per-file SHA-256 remains the final integrity authority.
+  if [[ -n "${HF_ENDPOINT:-}" && "${HF_ENDPOINT}" != 'https://huggingface.co' ]]; then
+    echo "WARNING: inherited HF_ENDPOINT='${HF_ENDPOINT}' is ignored; enforcing the official https://huggingface.co endpoint." >&2
+  fi
+  # Never let an inherited switch silently disable Xet: HF_XET_NUM_CONCURRENT_RANGE_GETS=32
+  # is the 32-simultaneous-connections guarantee for each pinned GGUF download.
+  if [[ -n "${HF_HUB_DISABLE_XET:-}" && "${HF_HUB_DISABLE_XET}" != '0' ]]; then
+    echo "WARNING: inherited HF_HUB_DISABLE_XET='${HF_HUB_DISABLE_XET}' is ignored; Xet concurrent range downloads stay enabled." >&2
+  fi
   echo "HF_DOWNLOAD_START repo=$repo_id file=$filename revision=$revision workers=${HF_DOWNLOAD_WORKERS:-32} xet_range_gets=${HF_XET_NUM_CONCURRENT_RANGE_GETS:-32}" >&2
+  echo "HF_DOWNLOAD_CONNECTIONS=32 endpoint=https://huggingface.co xet_high_performance=${HF_XET_HIGH_PERFORMANCE:-1}" >&2
   local attempt max_attempts="${HF_DOWNLOAD_RETRIES:-5}" rc=0
   for ((attempt=1; attempt<=max_attempts; attempt++)); do
-    if HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}" \
+    if HF_ENDPOINT='https://huggingface.co' \
+       HF_HUB_DISABLE_XET='0' \
        HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}" \
        HF_XET_NUM_CONCURRENT_RANGE_GETS="${HF_XET_NUM_CONCURRENT_RANGE_GETS:-32}" \
        HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}" \

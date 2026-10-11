@@ -5,6 +5,47 @@ All notable changes to this public release are documented here. This
 repository maintains a single public release; development history is not
 recorded in this file.
 
+## Unreleased
+
+### Changed — sustained agentic-work hardening
+
+- **Explicit agent-serving flags in `serve.sh`:** the persistent backend now
+  starts with `-n $MAX_TOKENS` (explicit maximum output budget), flash
+  attention (`-fa on`, both flag spellings auto-detected from `--help`), and
+  `--cache-reuse $KV_CACHE_REUSE` (default 256) so cached KV chunks are
+  recycled across agent turns after prompt divergence. Every new flag is
+  added only when the pinned runtime advertises it, so runtime updates can
+  never break startup.
+- **SSE keepalive in the gateway:** while streaming `text/event-stream`
+  responses, `auth_proxy.py` injects `: keepalive` comment lines whenever the
+  backend is silent (default 30 s, `GATEWAY_SSE_KEEPALIVE_SECONDS`). This
+  keeps Cloudflare Quick/Named Tunnel traffic alive across the edge's ~100 s
+  idle timeout during long silent prompt prefills. Comment lines are ignored
+  by every SSE client; idle/hard timeout semantics are unchanged.
+- **Longer session bounds:** gateway message-history limit raised from 256 to
+  512 messages (`MAX_MESSAGES`) and the hard per-request deadline from 2 to
+  4 hours (`GATEWAY_HARD_DEADLINE=14400`), sized for a full 131072-token
+  output budget at T4-class decode speed.
+- **HF-only downloads enforced:** the downloader now always uses the official
+  `https://huggingface.co` endpoint and keeps Xet concurrent range downloads
+  enabled; inherited `HF_ENDPOINT` mirror overrides and `HF_HUB_DISABLE_XET`
+  can no longer silently weaken the 32-connection download path
+  (`HF_DOWNLOAD_WORKERS=32`, `HF_XET_NUM_CONCURRENT_RANGE_GETS=32`).
+- **Named Tunnel hardening:** `TUNNEL_TOKEN` is validated as the real base64
+  Cloudflare tunnel credential (base64url JSON with fields `a`, `t`, `s`)
+  before launching `cloudflared`; startup waits for the
+  `Registered tunnel connection` edge marker before probing the public URL;
+  the named-mode public readiness window defaults to 120 s
+  (`EXPOSURE_NAMED_READY_TIMEOUT`); `cloudflared` runs with
+  `--no-autoupdate`.
+
+### Added
+
+- `tests/test_agent_hardening.py`: deterministic CPU-only coverage for the
+  SSE keepalive (live fake-backend gateway test), the 512-message policy,
+  the 4-hour deadline, the explicit serve flags, the HF-only download
+  enforcement, and the named-tunnel token validation.
+
 ## [v1.0.0] - 2026-09-05
 
 ### Added

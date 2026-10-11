@@ -237,6 +237,7 @@ class ProxyServer(http.server.ThreadingHTTPServer):
         telemetry_file: str | None = None, queue_size: int = P.MAX_QUEUED_INFERENCE,
         queue_wait_seconds: float = P.QUEUE_WAIT_SECONDS,
         effective_context_size: int = P.MAX_TOKENS, max_output_tokens: int | None = None,
+        sse_keepalive_seconds: float = P.SSE_KEEPALIVE_SECONDS,
     ):
         super().__init__(address, handler_cls)
         self.auth_token = token
@@ -251,6 +252,8 @@ class ProxyServer(http.server.ThreadingHTTPServer):
         self.effective_context_size = max(1, int(effective_context_size))
         requested_output_cap = self.effective_context_size if max_output_tokens is None else int(max_output_tokens)
         self.max_output_tokens = max(1, min(P.MAX_TOKENS, self.effective_context_size, requested_output_cap))
+        # 0 disables SSE keepalive injection entirely.
+        self.sse_keepalive_seconds = max(0.0, float(sse_keepalive_seconds))
         self.admission = P.AdmissionSlot(max_queued=self.queue_size, wait_seconds=self.queue_wait_seconds)
         self.rate_bucket = P.TokenBucket(capacity=P.RATE_CAPACITY, refill_per_sec=P.RATE_REFILL_PER_SEC)
         self.telemetry = DemoTelemetry(telemetry_file=telemetry_file)
@@ -575,6 +578,7 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
         timeout = self.server.backend_timeout
         conn = http.client.HTTPConnection(backend_host, backend_port, timeout=timeout)
         deadline = started + self.server.hard_deadline
+        stop_keepalive: threading.Event | None = None
         try:
             try:
                 forward_headers = safe_request_headers(self.headers.items(), backend_host, backend_port)
@@ -630,6 +634,7 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             has_cache_control = False
             has_context_header = False
             has_output_header = False
+            response_content_type = ""
             for key, value in response.getheaders():
                 lower = key.lower()
                 if lower in HOP_BY_HOP or lower.startswith(CORS_RESPONSE_PREFIX):
@@ -638,6 +643,8 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
                     has_length = True
                 if lower == "cache-control":
                     has_cache_control = True
+                if lower == "content-type":
+                    response_content_type = value
                 if lower == "x-muse-effective-context-size":
                     has_context_header = True
                 if lower == "x-muse-max-output-tokens":
@@ -661,6 +668,38 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             finish_class = "backend_error" if response.status >= 500 else "done"
             if response.status >= 500:
                 self.server.telemetry.note_backend_error(phase="response")
+            # Cloudflare's edge closes proxied connections that see no bytes for
+            # roughly 100 seconds. A 131072-token agent transcript can keep the
+            # backend silent (prompt prefill / long reasoning) for minutes, so
+            # for text/event-stream responses a watchdog thread injects SSE
+            # comment lines (": keepalive") while the backend is silent. SSE
+            # comment lines are ignored by every spec-compliant client, so the
+            # event stream stays byte-compatible with a direct llama.cpp
+            # connection; the injected comments never carry model output. The
+            # existing idle/hard timeout semantics are untouched: the blocking
+            # backend read still fails closed after the idle timeout, and the
+            # watchdog is always stopped when the stream loop exits.
+            stream_sse = response_content_type.lower().startswith("text/event-stream")
+            keepalive_interval = self.server.sse_keepalive_seconds if stream_sse else 0.0
+            client_write_lock = threading.Lock()
+            stop_keepalive = threading.Event()
+            last_backend_byte = time.monotonic()
+            def keepalive_watchdog() -> None:
+                while not stop_keepalive.wait(keepalive_interval):
+                    if time.monotonic() - last_backend_byte < keepalive_interval:
+                        continue
+                    try:
+                        with client_write_lock:
+                            self.wfile.write(b": keepalive\n\n")
+                            self.wfile.flush()
+                    except OSError:
+                        return
+
+            watchdog_thread = None
+            if keepalive_interval > 0:
+                watchdog_thread = threading.Thread(
+                    target=keepalive_watchdog, name="muse-sse-keepalive", daemon=True)
+                watchdog_thread.start()
             try:
                 while True:
                     remaining = deadline - time.monotonic()
@@ -683,8 +722,10 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
                         break
                     if ttft_ms is None:
                         ttft_ms = (time.monotonic() - started) * 1000
-                    self.wfile.write(chunk)
-                    self.wfile.flush()
+                    last_backend_byte = time.monotonic()
+                    with client_write_lock:
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
             except socket.timeout:
                 # Stall on the backend or expired hard deadline: fail closed.
                 self.server.telemetry.note_timeout(request_id)
@@ -702,6 +743,7 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
                 self.close_connection = True
                 return
             finally:
+                stop_keepalive.set()
                 if admitted_here:
                     self.server.admission.release()
                 self.server.telemetry.note_completed(response.status, (time.monotonic() - started) * 1000, ttft_ms, finish_class, request_id=request_id)
@@ -727,6 +769,8 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
                     pass
             self.close_connection = True
         finally:
+            if stop_keepalive is not None:
+                stop_keepalive.set()
             conn.close()
 
     do_GET = _proxy
@@ -752,6 +796,7 @@ def main() -> int:
     ap.add_argument("--max-output-tokens", type=int, default=None)
     ap.add_argument("--idle-timeout", type=float, default=P.IDLE_TIMEOUT)
     ap.add_argument("--hard-deadline", type=float, default=P.HARD_DEADLINE)
+    ap.add_argument("--sse-keepalive-seconds", type=float, default=P.SSE_KEEPALIVE_SECONDS)
     ap.add_argument("--telemetry-file", default=None)
     args = ap.parse_args()
 
@@ -777,6 +822,9 @@ def main() -> int:
     if args.effective_context_size < 1 or (args.max_output_tokens is not None and args.max_output_tokens < 1):
         print("ERROR: effective context/output limits must be positive", file=sys.stderr)
         return 26
+    if args.sse_keepalive_seconds < 0:
+        print("ERROR: --sse-keepalive-seconds must be non-negative", file=sys.stderr)
+        return 27
 
     server = ProxyServer(
         (args.listen_host, args.listen_port), AuthProxyHandler,
@@ -787,11 +835,13 @@ def main() -> int:
         queue_wait_seconds=args.queue_wait_seconds,
         effective_context_size=args.effective_context_size,
         max_output_tokens=args.max_output_tokens,
+        sse_keepalive_seconds=args.sse_keepalive_seconds,
     )
     print(
         f"Muse auth proxy READY http://{args.listen_host}:{args.listen_port} -> "
         f"http://{args.backend_host}:{args.backend_port} "
-        f"context={server.effective_context_size} max_output={server.max_output_tokens}",
+        f"context={server.effective_context_size} max_output={server.max_output_tokens} "
+        f"sse_keepalive={server.sse_keepalive_seconds:g}s",
         flush=True,
     )
     try:

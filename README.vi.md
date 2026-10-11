@@ -152,7 +152,7 @@ Server chỉ tải đúng các asset bên dưới từ revision Hugging Face b�
 | DFlash2 draft | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `dflash-Muse-Glimmer-30B-Q4_K_M.gguf` | 1.631.208.128 B | `b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef` |
 | Vision projector | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `mmproj-Muse-Glimmer-30B-Q4_K_M.gguf` | 1.400.328.928 B | `f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6` |
 
-Tải xuống dùng `HF_DOWNLOAD_WORKERS=32`, `HF_XET_NUM_CONCURRENT_RANGE_GETS=32`, Xet high-performance mode, retry và resume qua cache của Hugging Face Hub. Đây là 32 Xet range request đồng thời cho file lớn và tối đa 32 worker tải file; không có nghĩa 32 worker cùng xử lý một file duy nhất.
+Tải xuống dùng `HF_DOWNLOAD_WORKERS=32`, `HF_XET_NUM_CONCURRENT_RANGE_GETS=32`, Xet high-performance mode, retry và resume qua cache của Hugging Face Hub. Đây là 32 Xet range request đồng thời cho file lớn và tối đa 32 worker tải file; không có nghĩa 32 worker cùng xử lý một file duy nhất. Bộ tải luôn dùng endpoint chính thức `https://huggingface.co` (mọi ghi đè `HF_ENDPOINT` mirror bị bỏ qua kèm cảnh báo) và giữ Xet range download luôn bật (`HF_HUB_DISABLE_XET` không thể làm yếu đường 32 kết nối). SHA-256 pin theo từng file vẫn là thẩm quyền toàn vẹn cuối cùng.
 
 Cache local chỉ được tái sử dụng khi đúng byte size và SHA-256. Asset thiếu, tải dở hoặc hỏng sẽ được tải lại từ revision đã pin; nếu kiểm tra integrity thất bại, server không được phép khởi động.
 
@@ -234,7 +234,10 @@ Giá trị mặc định ở `config/default.env`; profile trong `config/profile
 | `CONTEXT_SIZE` / `MAX_TOKENS` | `131072` / `131072` | Context mong muốn và trần output API; giá trị thực tế có thể giảm nếu startup gặp lỗi tài nguyên GPU |
 | `REASONING_STRENGTH` | `high` | Reasoning setting của chat template |
 | `PARALLEL_SLOTS` | `1` | Mỗi lần một inference; request khác chờ trong hàng đợi hữu hạn |
-| `ADMISSION_QUEUE_SIZE` / `ADMISSION_QUEUE_WAIT_SECONDS` | `8` / `600` | Số request chờ tối đa / thời gian chờ tối đa |
+| `ADMISSION_QUEUE_SIZE` / `ADMISSION_QUEUE_WAIT_SECONDS` | `16` / `1200` | Số request chờ tối đa / thời gian chờ tối đa |
+| `GATEWAY_IDLE_TIMEOUT` / `GATEWAY_HARD_DEADLINE` | `600` / `14400` | Giới hạn im lặng của backend / giới hạn tổng mỗi request (4 giờ, đủ cho output 131072 token ở tốc độ T4) |
+| `GATEWAY_SSE_KEEPALIVE_SECONDS` | `30` | Chèn dòng comment SSE ": keepalive" khi backend im lặng; giữ kết nối qua Cloudflare edge (~100 s) không bị ngắt. `0` tắt |
+| `MAX_MESSAGES` | `512` | Giới hạn số message mỗi request (giới hạn tổng nội dung vẫn áp dụng) |
 | `EXPOSURE_MODE` | `quick` | `quick`, `named`, hoặc `proxy` (tự cung cấp transport) |
 | `MUSE_API_TOKEN` | — | Bearer secret riêng, tối thiểu 32 ký tự in được |
 | `TUNNEL_TOKEN` / `EXPOSURE_PUBLIC_URL` | — | Credential Named Tunnel và hostname HTTPS đã cấu hình |

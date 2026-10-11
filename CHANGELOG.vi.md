@@ -5,6 +5,45 @@ Mọi thay đổi đáng chú ý của public release này được ghi tại đ
 này duy trì một public release duy nhất; lịch sử phát triển không được ghi
 trong tệp này.
 
+## Unreleased
+
+### Changed — gia cố serving cho công việc agentic liên tục
+
+- **Flag serving agent tường minh trong `serve.sh`:** backend giờ start với
+  `-n $MAX_TOKENS` (trần output tường minh), flash attention (`-fa on`, cả hai
+  dạng flag được tự nhận diện qua `--help`) và `--cache-reuse
+  $KV_CACHE_REUSE` (mặc định 256) để tái sử dụng KV chunk giữa các lượt agent
+  sau khi prompt phân kỳ. Mọi flag mới chỉ được thêm khi runtime đã pin quảng
+  cáo flag đó, nên cập nhật runtime không thể làm hỏng startup.
+- **SSE keepalive trong gateway:** khi stream phản hồi
+  `text/event-stream`, `auth_proxy.py` chèn dòng comment `: keepalive` mỗi
+  khi backend im lặng (mặc định 30 s, `GATEWAY_SSE_KEEPALIVE_SECONDS`). Nhờ
+  đó traffic qua Cloudflare Quick/Named Tunnel sống sót qua ngưỡng idle ~100 s
+  của edge trong lúc prefill prompt dài. Dòng comment bị mọi SSE client bỏ
+  qua; ngữ nghĩa idle/hard timeout giữ nguyên.
+- **Nới giới hạn phiên làm việc:** giới hạn lịch sử message của gateway tăng
+  từ 256 lên 512 (`MAX_MESSAGES`) và hard deadline mỗi request từ 2 lên 4 giờ
+  (`GATEWAY_HARD_DEADLINE=14400`), đủ cho trần output 131072 token ở tốc độ
+  decode lớp T4.
+- **Thực thi tải chỉ từ HF:** bộ tải luôn dùng endpoint chính thức
+  `https://huggingface.co` và giữ Xet range download song song luôn bật; ghi
+  đè `HF_ENDPOINT` mirror và `HF_HUB_DISABLE_XET` kế thừa không thể âm thầm
+  làm yếu đường tải 32 kết nối (`HF_DOWNLOAD_WORKERS=32`,
+  `HF_XET_NUM_CONCURRENT_RANGE_GETS=32`).
+- **Gia cố Named Tunnel:** `TUNNEL_TOKEN` được xác thực là credential base64
+  thật của Cloudflare (JSON base64url với các trường `a`, `t`, `s`) trước khi
+  khởi chạy `cloudflared`; startup chờ marker `Registered tunnel connection`
+  trước khi probe URL public; cửa sổ readiness public của named mode mặc định
+  120 s (`EXPOSURE_NAMED_READY_TIMEOUT`); `cloudflared` chạy với
+  `--no-autoupdate`.
+
+### Added
+
+- `tests/test_agent_hardening.py`: kiểm thử deterministic chỉ dùng CPU cho
+  SSE keepalive (test gateway live với backend giả), policy 512 message,
+  deadline 4 giờ, flag serve tường minh, thực thi tải HF-only và xác thực
+  token Named Tunnel.
+
 ## [v1.0.0] - 2026-09-05
 
 ### Đã thêm
