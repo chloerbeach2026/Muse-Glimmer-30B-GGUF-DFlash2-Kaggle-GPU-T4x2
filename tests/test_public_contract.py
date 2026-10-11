@@ -221,36 +221,35 @@ def main() -> int:
           and venv_transport["raw_normal"] in venv_transport["failure_combined"]
           and venv_transport["raw_fallback"] in venv_transport["failure_combined"])
 
-    # BEGIN canonical DFlash2 dedicated q4-k-m input contract
-    canonical_dflash_url = "https://www.kaggle.com/models/dangkhoa2016/incoai-muse-glimmer-30b-dflash2-gguf/Gguf/q4-k-m/1"
-    legacy_dflash_url = "https://www.kaggle.com/models/dangkhoa2016/incoai-muse-glimmer-30b-dflash2-gguf/Gguf/default/1"
+    # BEGIN HF-only, revision-pinned model source contract
     kaggle_en = ROOT.joinpath("docs/KAGGLE_PRODUCTION.md").read_text(encoding="utf-8")
     kaggle_vi = ROOT.joinpath("docs/KAGGLE_PRODUCTION.vi.md").read_text(encoding="utf-8")
-    notebook_markdown = "\n".join(
+    notebook_markdown = "\\n".join(
         "".join(cell.get("source", "")) if isinstance(cell.get("source", ""), list) else cell.get("source", "")
         for cell in notebook.get("cells", [])
         if cell.get("cell_type") == "markdown"
     )
-
-    check("bilingual README uses dedicated DFlash2 q4-k-m variation",
-          all(canonical_dflash_url in text for text in (readme_en, readme_vi))
-          and all("GGUF / `q4-k-m` / `1`" in text for text in (readme_en, readme_vi))
-          and all(legacy_dflash_url not in text for text in (readme_en, readme_vi)))
-    check("bilingual Kaggle operator docs use dedicated DFlash2 q4-k-m variation",
-          all(canonical_dflash_url in text for text in (kaggle_en, kaggle_vi))
-          and all("GGUF / `q4-k-m` / version `1`" in text for text in (kaggle_en, kaggle_vi))
-          and all(legacy_dflash_url not in text for text in (kaggle_en, kaggle_vi)))
-    check("notebook documents dedicated DFlash2 q4-k-m input",
-          notebook_meta.get("dflash2_kaggle_variation") == "q4-k-m"
-          and canonical_dflash_url in notebook_markdown
-          and legacy_dflash_url not in notebook_markdown
-          and "legacy all-in-one" in notebook_markdown)
-    check("notebook input gate rejects legacy DFlash2 default bundle",
-          'DRAFT_VARIATION = "q4-k-m"' in notebook_code
-          and "is_canonical_variation_path" in notebook_code
-          and 'SESSION["draft_variation_gate"] = "PASS"' in notebook_code
-          and "Detach the legacy `default` all-in-one variation" in notebook_code)
-    # END canonical DFlash2 dedicated q4-k-m input contract
+    check("bilingual README documents HF-only weights and 32-way transfers",
+          all("Hugging Face" in text for text in (readme_en, readme_vi))
+          and all("HF_XET_NUM_CONCURRENT_RANGE_GETS=32" in text for text in (readme_en, readme_vi)))
+    check("bilingual operator docs describe pinned HF assets and both Cloudflare modes",
+          all("Named Tunnel" in text and "Quick Tunnel" in text for text in (kaggle_en, kaggle_vi))
+          and all("Hugging Face" in text for text in (kaggle_en, kaggle_vi)))
+    check("notebook documents the pinned HF model-source contract",
+          notebook_meta.get("model_source_contract") == "huggingface_only+immutable_revisions+expected_size+sha256"
+          and notebook_meta.get("dflash2_input_contract") == "pinned_hf_revision+exact_filename+size+sha256"
+          and notebook_meta.get("agent_context_target") == 131072
+          and "HF-only" in notebook_markdown
+          and "do **not** attach" in notebook_markdown.lower())
+    check("notebook no longer requires Kaggle model/draft variations",
+          "is_canonical_variation_path" not in notebook_code
+          and "runtime_roots = sorted" not in notebook_code
+          and "dangkhoa2016/incoai-muse-glimmer-30b-dflash2-gguf" not in notebook_code
+          and 'DRAFT_EXPECTED_SHA256 = "b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef"' in notebook_code)
+    check("cloudflared installer is tracked by the source manifest implementation",
+          "'scripts/install_cloudflared.sh'" not in source_manifest
+          and "ROOT_DIRS={'config','scripts','tests'}" in source_manifest)
+    # END HF-only, revision-pinned model source contract
 
     license_text = ROOT.joinpath("LICENSE").read_text(encoding="utf-8")
     check("MIT license header", "MIT License" in license_text)
