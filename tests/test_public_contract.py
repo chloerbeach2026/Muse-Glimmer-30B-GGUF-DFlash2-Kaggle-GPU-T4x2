@@ -293,6 +293,11 @@ def main() -> int:
     check("gateway contains context-aware clamping and response hints",
           "effective_context_size" in auth_proxy.ProxyServer.__init__.__annotations__
           and "X-Muse-Effective-Context-Size" in auth_proxy.AuthProxyHandler._proxy.__code__.co_consts)
+    forwarded_headers = auth_proxy.safe_request_headers(
+        [("content-length", "999"), ("Content-Type", "application/json")],
+        "127.0.0.1", 8088)
+    check("gateway strips inbound Content-Length variants before recomputing body length",
+          all(key.lower() != "content-length" for key in forwarded_headers))
     check("gateway /ready public route allowed", P.ROUTE_ALLOW is None)
 
     check("gateway server version", getattr(auth_proxy.AuthProxyHandler, "server_version", None) == "MuseExternalProxy/1.0.0")
