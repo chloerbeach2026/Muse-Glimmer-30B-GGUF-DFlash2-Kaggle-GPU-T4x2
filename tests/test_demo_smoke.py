@@ -52,9 +52,12 @@ class BackendHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
-    def _record(self, method, path):
-        backend_seen.append({"method": method, "path": path,
-                             "authorization": self.headers.get("Authorization")})
+    def _record(self, method, path, body=None):
+        item = {"method": method, "path": path,
+                "authorization": self.headers.get("Authorization")}
+        if body is not None:
+            item["body"] = body
+        backend_seen.append(item)
         return len(backend_seen)
 
     def _read_body(self):
@@ -87,7 +90,7 @@ class BackendHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self._read_body()
-        idx = self._record("POST", self.path)
+        idx = self._record("POST", self.path, body)
         if self.path.startswith("/v1/chat/completions"):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -128,14 +131,17 @@ def start_backend(handler_cls):
     return server, server.server_address[1]
 
 
-def start_proxy(bport, timeout, idle, hard, telemetry_file):
+def start_proxy(bport, timeout, idle, hard, telemetry_file, context_size=P.MAX_TOKENS, output_cap=None):
     pport = free_port()
     env = dict(os.environ)
     env["MUSE_API_TOKEN"] = TOKEN
     argv = [sys.executable, str(PROXY), "--listen-host", "127.0.0.1", "--listen-port", str(pport),
             "--backend-host", "127.0.0.1", "--backend-port", str(bport),
             "--backend-timeout", str(timeout), "--idle-timeout", str(idle),
-            "--hard-deadline", str(hard), "--telemetry-file", telemetry_file]
+            "--hard-deadline", str(hard), "--telemetry-file", telemetry_file,
+            "--effective-context-size", str(context_size)]
+    if output_cap is not None:
+        argv += ["--max-output-tokens", str(output_cap)
     p = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     deadline = time.time() + 15
     while time.time() < deadline:
@@ -237,6 +243,14 @@ def main() -> int:
             check("SSE [DONE] present", b"[DONE]" in data)
             check("timing preserved", b"predicted_per_second" in data)
             check("Authorization stripped upstream", backend_seen[-1]["authorization"] is None)
+            forwarded = json.loads(backend_seen[-1]["body"])
+            check("agent reasoning default is injected for IDE clients",
+                  forwarded.get("chat_template_kwargs", {}).get("reasoning_strength") == "high")
+            check("agent output cap defaults to model maximum",
+                  forwarded.get("max_tokens") == P.MAX_TOKENS)
+            check("effective context and output are exposed to clients",
+                  hdrs.get("X-Muse-Effective-Context-Size") == str(P.MAX_TOKENS)
+                  and hdrs.get("X-Muse-Max-Output-Tokens") == str(P.MAX_TOKENS))
 
             # --- telemetry was written atomically by this first proxy ---
             tx = Path(tfile)
@@ -247,6 +261,25 @@ def main() -> int:
                 check("telemetry gates auth/allowlist counters", snap["requests_total"] >= 1)
         finally:
             proxy.terminate(); server.shutdown(); server.server_close()
+
+        # --- adaptive context fallback informs the gateway and clamps client budgets ---
+        server_ctx, bport_ctx = start_backend(BackendHandler)
+        cfile = str(Path(td) / "gateway-context.jsonl")
+        pport_ctx, proxy_ctx = start_proxy(bport_ctx, 2.0, 3.0, 4.0, cfile, context_size=32768, output_cap=32768)
+        try:
+            ask = json.dumps({"messages":[{"role":"user","content":"continue"}],
+                              "max_completion_tokens": 131072}).encode()
+            st, hdrs, _ = request(pport_ctx, "POST", "/v1/chat/completions", body=ask,
+                                  headers={"Authorization": AUTH, "Content-Type":"application/json"})
+            forwarded = json.loads(backend_seen[-1]["body"])
+            check("adaptive context clamps max_completion_tokens", st == 200
+                  and forwarded.get("max_tokens") == 32768
+                  and "max_completion_tokens" not in forwarded)
+            check("adaptive context is advertised in response headers",
+                  hdrs.get("X-Muse-Effective-Context-Size") == "32768"
+                  and hdrs.get("X-Muse-Max-Output-Tokens") == "32768")
+        finally:
+            close_proxy(server_ctx, proxy_ctx)
 
         # --- payload limits use fresh proxies so the token bucket is full (cap 2) ---
         server2, proxy2, pport2, tfile2 = fresh_proxy(td)
