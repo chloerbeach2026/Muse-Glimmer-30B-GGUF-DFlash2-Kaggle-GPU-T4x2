@@ -349,6 +349,27 @@ def main() -> int:
           {"preflight", "start", "status", "endpoint", "local-endpoint", "stop", "stop-all"}
           <= known_commands)
 
+    supervisor = ROOT.joinpath("scripts/agent_supervisor.sh").read_text(encoding="utf-8")
+    systemd_unit = ROOT.joinpath("config/muse-agent-server.service.in").read_text(encoding="utf-8")
+    systemd_installer = ROOT.joinpath("scripts/install_systemd_service.sh").read_text(encoding="utf-8")
+    check("systemd supervisor detects stack failures and performs bounded recovery",
+          "./external.sh" in supervisor
+          and "BACKEND_PROVENANCE" in supervisor
+          and "SUPERVISOR_HEALTH_CHECK_FAILED" in supervisor
+          and "MAX_START_BACKOFF" in supervisor
+          and "stop-all" in supervisor)
+    check("systemd unit provides restart-on-failure and graceful stack shutdown",
+          "Type=simple" in systemd_unit
+          and "Restart=always" in systemd_unit
+          and "KillMode=mixed" in systemd_unit
+          and "@ENV_FILE@" in systemd_unit)
+    check("systemd installer preserves existing secret file and does not auto-start model",
+          'if [[ ! -e "$ENV_FILE" ]]' in systemd_installer
+          and 'install -o root -g root -m 0600 /dev/null "$ENV_FILE"' in systemd_installer
+          and "systemctl daemon-reload" in systemd_installer
+          and "systemctl enable --now muse-agent-server.service" in systemd_installer
+          and systemd_installer.index("systemctl daemon-reload") < systemd_installer.index("systemctl enable --now"))
+
     print(f"\npassed={TOTAL - len(FAILURES)} failed={len(FAILURES)}")
     return 1 if FAILURES else 0
 
