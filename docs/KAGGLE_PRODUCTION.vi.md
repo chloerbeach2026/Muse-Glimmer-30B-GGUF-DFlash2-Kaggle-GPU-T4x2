@@ -1,117 +1,107 @@
-# Notebook Production trên Kaggle
+# Hướng dẫn vận hành Kaggle / Personal Agent Server
 > 🌐 Language / Ngôn ngữ: [English](KAGGLE_PRODUCTION.md) | **Tiếng Việt**
 
-Notebook production canonical cho public release `v1.0.0` là:
-
-`notebooks/kaggle-production.ipynb`
-
-Đây là notebook vận hành dành cho Kaggle NVIDIA T4 x2, sử dụng repository public đã khóa làm runtime source thay vì tự triển khai lại serving stack.
+Notebook `notebooks/kaggle-production.ipynb` là quy trình **qualification** cho fork này. Notebook dùng chung các script serving của repository và tải model từ revision Hugging Face đã pin. Kaggle không được xem là máy chủ bảo đảm chạy 24/7.
 
 ## Notebook xác minh những gì
 
-Một lần chạy đầy đủ xác minh:
+Một lần chạy đầy đủ cần xác minh:
+- phần cứng NVIDIA T4 x2 và bộ nhớ GPU khả dụng;
+- revision Hugging Face chính xác của target, draft DFlash2 và vision projector, dung lượng và SHA-256;
+- commit của fork, source manifest và build llama.cpp từ source đã pin;
+- Context/output được yêu cầu và hiệu lực, bao gồm fallback nếu thiếu tài nguyên;
+- gateway Bearer-auth, phản hồi non-stream, SSE và payload tool-call nhiều lượt;
+- Cloudflare Quick Tunnel tùy chọn và cleanup an toàn.
 
-- đúng hai GPU NVIDIA T4 với lượng VRAM khả dụng theo yêu cầu;
-- source identity của fork, worktree sạch và `SOURCE_MANIFEST.sha256`;
-- target GGUF, draft DFlash2 và vision projector chỉ tải từ Hugging Face theo revision bất biến;
-- dung lượng byte và SHA-256 chính xác của cả ba asset trước khi serving;
-- runtime CUDA llama.cpp đã pin được build từ source nếu chưa có cache tương ứng;
-- Context/output thực tế đã load, bao gồm fallback Context nếu tài nguyên GPU không đủ;
-- model-memory residency thành công trên cả hai GPU T4 sau khi backend load;
-- gateway xác thực xử lý payload agent OpenAI-compatible;
-- một generation non-stream thực và một generation SSE thực kết thúc bằng `[DONE]`;
-- Cloudflare Quick Tunnel tùy chọn được qualification riêng với sức khỏe model/runtime local;
-- version `cloudflared 2026.10.0` đã pin và SHA-256 chính thức theo kiến trúc trước khi thực thi;
-- evidence xác định và cleanup, bao gồm xóa API token do notebook tự tạo.
+Verdict của notebook chỉ áp dụng cho lần chạy đã thực hiện. Tài liệu này không khẳng định Kaggle luôn sẵn sàng hoặc Context 131.072 token chắc chắn vừa mọi cấu hình GPU.
+
 ## Biên runtime
 
-Notebook này là workflow qualification Kaggle T4x2, không phải dịch vụ hosted 24/7. Model files chỉ được tải từ revision Hugging Face đã pin và notebook từ chối asset sai size hoặc SHA-256.
+Mục tiêu serving cá nhân là Linux x86-64 với hai GPU, Python 3.12 và toolchain CUDA hoạt động. Môi trường qualification mục tiêu là Kaggle NVIDIA T4 x2. Để dùng hàng ngày ổn định, hãy triển khai trên GPU host có vòng đời liên tục; session Kaggle có thể bị dừng hoặc tái tạo.
 
-Server yêu cầu `CONTEXT_SIZE=131072`, `MAX_TOKENS=131072`, reasoning strength high và DFlash2. Nếu lỗi startup/tài nguyên được nhận diện khiến Context này không load được, server có thể thử Context nhỏ hơn. Gateway đọc metadata runtime thành công và giới hạn generation của client theo Context/output thực tế đã load. Evidence ghi giá trị hiệu lực, không giả định 131K đã thành công.
+Context model được yêu cầu là 131.072 token. Server thử mức đó trước với KV cache quantized. Khi startup thất bại vì tài nguyên, server có thể thử Context nhỏ hơn và báo giá trị thực tế trong `./serve.sh status`, response headers và runtime metadata. Gateway giới hạn output request vượt mức theo budget hiệu lực. Cơ chế này giảm lỗi lệch cấu hình nhưng không đảm bảo tốc độ hoặc Context cụ thể cho mọi workload.
 
-Notebook dùng Cloudflare Quick Tunnel để qualification transport tùy chọn. Named Tunnel ổn định cần hostname/DNS route và `TUNNEL_TOKEN`; hãy cấu hình trên host bền vững với `EXPOSURE_MODE=named`. Kaggle có thể dừng khi session kết thúc nên không thay thế persistent host cho công việc cá nhân luôn bật.
 ## Nguồn model (chỉ Hugging Face)
 
-**Không attach** target, draft DFlash2, projector hay runtime dựng sẵn thành Kaggle input. Notebook clone fork này, kiểm tra source manifest, tải weights theo revision Hugging Face bất biến, dùng 32 Xet range request mỗi file và tối đa 32 file worker, retry/resume và kiểm tra SHA-256 chính xác. Runtime llama.cpp được build từ source commit bất biến đã cấu hình nếu build tương ứng chưa có cache.
+Không attach model weights vào Kaggle. Server tải đúng file từ revision Hugging Face bất biến và xác minh dung lượng cùng SHA-256 trước khi serving.
 
-| Asset | Nguồn | Revision | File local |
-| --- | --- | --- | --- |
-| Target model | `bartowski/Muse-Glimmer-30B-GGUF` | `16f5840bef28e4018cf41a7ec9709d6fd89176f6` | `Muse-Glimmer-30B-Q4_K_M.gguf` |
-| Draft DFlash2 | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `dflash-Muse-Glimmer-30B-Q4_K_M.gguf` (sau download đổi tên sang file canonical local) |
-| Vision projector | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `mmproj-Muse-Glimmer-30B-Q4_K_M.gguf` |
+| Asset | Repository | Revision | File | Byte mong đợi | SHA-256 |
+| --- | --- | --- | --- | ---: | --- |
+| Target | `bartowski/Muse-Glimmer-30B-GGUF` | `16f5840bef28e4018cf41a7ec9709d6fd89176f6` | `Muse-Glimmer-30B-Q4_K_M.gguf` | 17306324000 | `0d3fc85f61d10fdc84072f0bba6005d61c1ac5605a2627b0fd5ea4ff8194c384` |
+| Draft DFlash2 | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `dflash-Muse-Glimmer-30B-Q4_K_M.gguf` | 1631208128 | `b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef` |
+| Vision projector | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `mmproj-Muse-Glimmer-30B-Q4_K_M.gguf` | 1400328928 | `f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6` |
 
-Size và digest mong đợi được duy trì trong `config/default.env` và xác minh bởi downloader/startup gate. Không lưu weights trong Git.
+Download sử dụng `HF_DOWNLOAD_WORKERS=32`, `HF_XET_NUM_CONCURRENT_RANGE_GETS=32`, Xet high-performance, retry và Hub cache resume. Mục tiêu là 32 range request đồng thời cho file Xet lớn và tối đa 32 worker tải file; điều này không có nghĩa 32 worker sẽ cùng tải một file. Repository public không cần HF token; nếu asset gated, dùng token chỉ đọc qua biến môi trường/secret manager, không commit token.
+
+Cache target, draft và projector chỉ được dùng lại nếu dung lượng byte chính xác và SHA-256 khớp. File hỏng hoặc tải dở sẽ bị xóa và tải lại; startup phải từ chối tiếp tục nếu kiểm tra không đạt.
+
 ## Secret khuyến nghị
 
-Tạo Kaggle Secret:
-
-`MUSE_API_TOKEN`
-
-Sử dụng tối thiểu 32 ký tự in được.
-
-Nếu secret bị thiếu, notebook tạo token tạm thời an toàn bằng cơ chế mật mã tại:
-
-`/kaggle/working/.muse-secrets/MUSE_API_TOKEN`
-
-Thư mục dùng mode `0700`, file dùng mode `0600`, giá trị token không bao giờ được in và cleanup bình thường sẽ xóa file được tạo.
+Đặt `MUSE_API_TOKEN` thành secret riêng tư dài ít nhất 32 ký tự in được, thông qua secret manager hoặc biến môi trường tiến trình. Không commit hay in token vào log và không dùng Cloudflare tunnel token làm API token.
 
 ## Quy trình chạy
 
-1. Chọn **GPU T4 x2**.
-2. Bật Internet để clone repository, tải weights HF và dùng Quick Tunnel tùy chọn.
-3. Không attach model/runtime input; notebook tự tải weights từ HF và build runtime CUDA đã pin khi cần.
-4. Tùy chọn cấu hình `MUSE_API_TOKEN`.
-5. Chạy **Restart Session → Run All**.
-6. Xem final evidence và các verdict trước khi publish notebook output.
+Trên GPU host tương thích (hoặc để qualification trên Kaggle):
 
-Một release qualification thành công nên có:
+1. Chọn GPU phù hợp và bật network cho lần tải source/model đầu tiên.
+2. Clone fork này và vào thư mục repository.
+3. Đặt `MUSE_API_TOKEN` trong shell hoặc secret manager.
+4. Chạy `./readiness.sh` và `./external.sh preflight`.
+5. Chạy `./external.sh start`, sau đó `./external.sh status` và `./external.sh endpoint`.
+6. Đọc Context/output hiệu lực; cấu hình từng desktop client theo giá trị thực tế đó.
+7. Kiểm tra tool loop nhiều lượt và streaming trước khi cho chạy unattended.
 
-```text
-KAGGLE_T4X2_GATE=PASS
-FORK_SOURCE_IDENTITY=PASS
-CANONICAL_ENVIRONMENT=PASS
-HF_MODEL_INTEGRITY_GATE=PASS
-DUAL_GPU_MEMORY_RESIDENCY=PASS
-LOCAL_AUTH_GATEWAY=PASS
-LOCAL_NONSTREAM_DEMO=PASS
-LOCAL_SSE_DEMO=PASS
-SEMANTIC_SANITY_GATE=PASS
-DFLASH2_ACTIVITY_GATE=PASS
-VISIBLE_ANSWER_GATE=PASS
-CORE_PRODUCTION_DEMO=PASS
-GATEWAY_RUNTIME_LIMITS_PROCESS_GATE=PASS
-PUBLIC_QUICK_TUNNEL=PASS
-CLOUDFLARED_SHA256_VERIFIED=PASS
-PUBLICATION_SECRET_SCAN=PASS
-PUBLICATION_ARTIFACT_BUNDLE=PASS
-OVERALL_PRODUCTION_DEMO=PASS
-AUTO_CLEANUP=PASS
-GENERATED_TOKEN_CLEANUP=PASS
-RERUN_SAME_NOTEBOOK=SUPPORTED
-FINAL_NOTEBOOK_RESULT=PASS
-NOTEBOOK_EXECUTION_COMPLETED=PASS
+Ví dụ:
+
+```bash
+export MUSE_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+./readiness.sh
+./external.sh preflight
+./external.sh start
+./external.sh status
+./external.sh endpoint
 ```
 
-## Bằng chứng publication
+## Hợp đồng giao thức agent
 
-Successful run canonical được mô tả trong
-[`PUBLICATION_EVIDENCE.vi.md`](PUBLICATION_EVIDENCE.vi.md). Evidence bundle là
-GitHub Release asset chứ không phải blob được track trong repository, nhờ đó
-Git history vẫn gọn và release-build evidence được tách rõ khỏi executed-run
-evidence.
+Gateway cung cấp OpenAI-compatible `/v1/chat/completions`. API chấp nhận role `system`, `developer`, `user`, `assistant`, `tool`, assistant `tool_calls`, kết quả `tool_call_id`, content-part array đa phương thức, cả `max_tokens` và `max_completion_tokens`, cùng SSE. Chạy fake-backend CPU test trước khi kết nối harness agent.
 
-Notebook source sạch có thể dùng lại để test nhiều lần. Dùng `muse_stop()` để
-dừng service thuộc ownership của notebook hoặc `muse_reset(...)` để reset
-runtime state, sau đó chạy notebook lại. Publication evidence đã ghi nhận đại
-diện cho một qualification run thành công và không claim một full Run All lần
-hai đã được qualification riêng.
+### OpenCode
+
+Dùng provider OpenAI-compatible với base URL `http://127.0.0.1:8090/v1`, model ID `muse-glimmer-30B`, API key lấy từ `MUSE_API_TOKEN`, và `limit.context` / `limit.output` khớp giá trị hiệu lực. README có cấu hình khởi đầu.
+
+### Hermes Agent
+
+Dùng custom OpenAI-compatible model/provider với cùng base URL và model ID. Cấu hình Context/output từ runtime report thực tế, rồi thử chu trình assistant-tool-call → tool-result → assistant-final và session nhiều bước. Context phía client không được lớn hơn Context server đã load.
+
+### Claude Code qua OmniRoute
+
+Dùng OmniRoute làm ingress Anthropic-compatible cho Claude Code và cấu hình upstream OpenAI-compatible về gateway này. Xác nhận đúng phiên bản OmniRoute chuyển đổi chính xác tool-use, streaming events, cancellation và kết quả tool nhiều lượt. Đây là protocol bridge bên thứ ba, không phải tuyên bố hỗ trợ chính thức từ Anthropic.
+
+## Cloudflare exposure khuyến nghị
+
+Installer pin `cloudflared 2026.10.0` và xác minh SHA-256 trước khi thực thi. Chỉ gateway đã xác thực được public; cổng backend 8088 luôn ở loopback.
+
+Quick Tunnel (URL tạm thời):
+
+```bash
+export EXPOSURE_MODE=quick
+./external.sh start
+./external.sh endpoint
+```
+
+Named Tunnel (hostname ổn định đã cấu hình):
+
+1. Tạo Named Tunnel và Published Application/DNS route trong Cloudflare Zero Trust.
+2. Export `EXPOSURE_MODE=named`, `TUNNEL_TOKEN` và `EXPOSURE_PUBLIC_URL=https://your-hostname.example` qua environment/secret manager.
+3. Chạy `./external.sh preflight` rồi `./external.sh start`.
+
+Token được giữ trong file runtime-state quyền 0600 và xóa khi shutdown hoặc startup thất bại. Token một mình không tạo hostname/DNS route. `EXPOSURE_MODE=proxy` là lựa chọn tự quản lý transport.
 
 ## Quy tắc publication
 
-Notebook trong repository được publish ở trạng thái sạch, không có cell output và không nhúng credential.
+Notebook được commit phải sạch, không có output/secret nhúng và vượt qua kiểm tra SHA-256 sidecar. Notebook đã chạy trên Kaggle là bằng chứng cho riêng lần chạy đó. Không công bố PASS trước khi một lần chạy mới trên fork hiện tại thành công.
 
-Executed qualification notebook và operational evidence là artifact phục vụ review; chúng không được commit làm canonical source notebook.
+## An toàn và hạn chế đã biết
 
-Trước khi publication repository, xác minh SHA-256 của notebook tracked với:
-
-`notebooks/kaggle-production.ipynb.sha256`
+Đây là server inference cá nhân một chủ sở hữu, không phải dịch vụ thương mại đa tenant. Chỉ có một inference slot hoạt động cùng hàng đợi giới hạn; không có cụm high availability và Kaggle không bảo đảm uptime 24/7. Bảo vệ API token, giữ cổng 8088 ở private network và kiểm tra lại identity của source/runtime trước khi triển khai.
