@@ -14,7 +14,7 @@ TUNNEL_LOG="$STATE_DIR/exposure-tunnel.log"
 PROXY_HOST="127.0.0.1"
 PROXY_PORT="${EXPOSURE_PROXY_PORT:-8090}"
 MODE="${EXPOSURE_MODE:-quick}"
-CLOUDFLARED_BIN="${CLOUDFLARED_BIN:-cloudflared}"
+CLOUDFLARED_BIN="${CLOUDFLARED_BIN:-$ROOT/vendor/bin/cloudflared}"
 READY_TIMEOUT="${EXPOSURE_READY_TIMEOUT:-45}"
 BACKEND_READY_TIMEOUT="${EXPOSURE_BACKEND_READY_TIMEOUT:-900}"
 BACKEND_READY_INTERVAL="${EXPOSURE_BACKEND_READY_INTERVAL:-1}"
@@ -362,7 +362,11 @@ start_exposure(){
   fi
   [[ "$MODE" == quick || "$MODE" == named || "$MODE" == proxy ]] || { echo 'ERROR: EXPOSURE_MODE must be quick, named, or proxy' >&2; return 35; }
   if [[ "$MODE" != proxy ]]; then
-    command -v "$CLOUDFLARED_BIN" >/dev/null 2>&1 || { echo "ERROR: cloudflared binary not found: $CLOUDFLARED_BIN" >&2; return 34; }
+    if [[ "$CLOUDFLARED_BIN" == "$ROOT/vendor/bin/cloudflared" ]]; then
+      bash "$ROOT/scripts/install_cloudflared.sh" "$CLOUDFLARED_BIN" || return 34
+    else
+      command -v "$CLOUDFLARED_BIN" >/dev/null 2>&1 || { echo "ERROR: cloudflared binary not found: $CLOUDFLARED_BIN" >&2; return 34; }
+    fi
   fi
 
   : >"$PROXY_LOG"; chmod 600 "$PROXY_LOG" 2>/dev/null || true
