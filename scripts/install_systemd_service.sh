@@ -8,7 +8,7 @@ SERVICE_USER="${MUSE_SERVICE_USER:-${SUDO_USER:-$(id -un)}}"
 SERVICE_GROUP="$(id -gn "$SERVICE_USER" 2>/dev/null || true)"
 
 if [[ "$(id -u)" != 0 ]]; then
-  echo "ERROR: run with sudo: sudo $ROOT/scripts/install_systemd_service.sh" >&2
+  echo "ERROR: run with sudo: sudo bash $ROOT/scripts/install_systemd_service.sh" >&2
   exit 2
 fi
 [[ -f "$TEMPLATE" ]] || { echo "ERROR: unit template missing: $TEMPLATE" >&2; exit 3; }
@@ -20,7 +20,7 @@ case "$ROOT" in
     echo "Move the checkout to a path containing only letters, digits, dot, underscore, slash and hyphen." >&2
     exit 6 ;;
 esac
-[[ -x "$ROOT/scripts/agent_supervisor.sh" && -x "$ROOT/external.sh" && -x "$ROOT/serve.sh" ]] || {
+[[ -f "$ROOT/scripts/agent_supervisor.sh" && -x "$ROOT/external.sh" && -x "$ROOT/serve.sh" ]] || {
   echo "ERROR: project entrypoints are not executable. Check the checkout and file modes." >&2
   exit 7
 }
