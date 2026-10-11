@@ -1,116 +1,107 @@
-# Kaggle Production Notebook
+# Kaggle / Persistent Agent Server Operator Guide
 > 🌐 Language / Ngôn ngữ: **English** | [Tiếng Việt](KAGGLE_PRODUCTION.vi.md)
 
-The canonical production notebook for the public `v1.0.0` release is:
-
-`notebooks/kaggle-production.ipynb`
-
-It is an operator-focused Kaggle NVIDIA T4 x2 notebook that clones this fork's `main` branch, pins the exact resolved commit SHA for the run, and uses that checkout rather than reimplementing the serving stack.
+The notebook at `notebooks/kaggle-production.ipynb` is a **qualification workflow** for this fork. It uses the same repository serving scripts and downloads model assets from pinned Hugging Face revisions. Kaggle is not treated as a 24/7 host.
 
 ## What the notebook validates
 
-A complete run validates:
+A complete run should validate:
+- NVIDIA T4 x2 hardware and usable GPU memory;
+- exact Hugging Face target, DFlash2 draft and vision-projector revisions, file sizes and SHA-256;
+- the fork commit, source manifest and pinned llama.cpp source build;
+- requested and effective Context/output limits, including any resource-triggered fallback;
+- Bearer-authenticated gateway, non-stream responses, SSE and multi-turn tool-call payloads;
+- optional Cloudflare Quick Tunnel transport and safe cleanup.
 
-- exactly two NVIDIA T4 GPUs with the required visible VRAM;
-- fork source identity, a clean worktree, and `SOURCE_MANIFEST.sha256`;
-- Hugging Face-only target GGUF, DFlash2 draft and vision projector from immutable revisions;
-- exact byte sizes and SHA-256 for all three assets before serving;
-- the pinned llama.cpp CUDA runtime built from source if the exact build is not cached;
-- actual Context/output limits loaded by the backend, including any resource-driven Context fallback;
-- successful model-memory residency on both T4 GPUs after backend load;
-- authenticated gateway handling and OpenAI-compatible agent request payloads;
-- one real non-streaming generation and one real SSE generation ending with `[DONE]`;
-- optional Cloudflare Quick Tunnel transport independently from local model/runtime health;
-- pinned `cloudflared 2026.10.0` and its official architecture-specific SHA-256 before execution;
-- deterministic evidence and cleanup, including deletion of a notebook-generated API token.
+The notebook's verdict applies only to that executed run. This guide does not claim that Kaggle has permanent availability or that a 131,072-token Context will fit every GPU runtime.
+
 ## Runtime boundaries
 
-This notebook is a Kaggle T4x2 qualification workflow, not a 24/7 managed service. Model files are downloaded only from pinned Hugging Face revisions, and the notebook rejects assets with a mismatched size or SHA-256.
+The personal-serving target is Linux x86-64 with two GPUs, Python 3.12 and a working CUDA build toolchain. The tested qualification target is Kaggle NVIDIA T4 x2. For day-to-day uptime, use a persistent GPU host; a Kaggle session can stop or be recycled.
 
-The server requests `CONTEXT_SIZE=131072`, `MAX_TOKENS=131072`, high reasoning strength and DFlash2. If recognized startup/resource failure prevents that Context from loading, smaller Context attempts may be used. The gateway reads successful runtime metadata and clamps client generation limits to the Context/output budget actually loaded. Evidence records the effective values rather than assuming 131K succeeded.
+The requested model Context is 131,072 tokens. The server attempts that first with quantized KV cache. On recognized startup/resource failure it can try a smaller Context and reports the actual value in `./serve.sh status`, response headers, and runtime metadata. The gateway clamps an overlarge output request to the effective output budget. This reduces configuration mismatch but cannot guarantee a particular speed or Context under every workload.
 
-The notebook uses Cloudflare Quick Tunnel to qualify optional public transport. A stable Named Tunnel requires a Cloudflare hostname/DNS route and `TUNNEL_TOKEN`; configure it on a persistent host with `EXPOSURE_MODE=named`. Kaggle may stop when its session ends, so it is not a substitute for a persistent host for always-on personal work.
 ## Model sources (Hugging Face only)
 
-Do **not** attach target, DFlash2 draft, projector or prebuilt runtime as Kaggle inputs. The notebook clones this fork, verifies the source manifest, downloads weights using immutable Hugging Face revisions, 32 Xet range requests per file plus up to 32 file workers, retries/resume and exact SHA-256 checks. The llama.cpp runtime is built from the configured immutable source commit if the exact build is not cached.
+Do not attach model weights to Kaggle. The server downloads exact files from immutable Hugging Face revisions and verifies size and SHA-256 before serving.
 
-| Asset | Source | Revision | Local file |
-| --- | --- | --- | --- |
-| Target model | `bartowski/Muse-Glimmer-30B-GGUF` | `16f5840bef28e4018cf41a7ec9709d6fd89176f6` | `Muse-Glimmer-30B-Q4_K_M.gguf` |
-| DFlash2 draft | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `dflash-Muse-Glimmer-30B-Q4_K_M.gguf` (renamed locally to the canonical filename after download) |
-| Vision projector | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `mmproj-Muse-Glimmer-30B-Q4_K_M.gguf` |
+| Asset | Repository | Revision | File | Expected bytes | SHA-256 |
+| --- | --- | --- | --- | ---: | --- |
+| Target | `bartowski/Muse-Glimmer-30B-GGUF` | `16f5840bef28e4018cf41a7ec9709d6fd89176f6` | `Muse-Glimmer-30B-Q4_K_M.gguf` | 17306324000 | `0d3fc85f61d10fdc84072f0bba6005d61c1ac5605a2627b0fd5ea4ff8194c384` |
+| DFlash2 draft | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `dflash-Muse-Glimmer-30B-Q4_K_M.gguf` | 1631208128 | `b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef` |
+| Vision projector | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `mmproj-Muse-Glimmer-30B-Q4_K_M.gguf` | 1400328928 | `f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6` |
 
-Expected sizes and digests are maintained in `config/default.env` and verified by the downloader/startup gate. No weights are stored in Git.
+Download uses `HF_DOWNLOAD_WORKERS=32`, `HF_XET_NUM_CONCURRENT_RANGE_GETS=32`, Xet high-performance mode, retries, and Hub cache resume. This targets 32 concurrent range requests for a large Xet file and up to 32 file workers; it does not imply that 32 workers simultaneously download one file. No Hugging Face token is required for public repositories; for gated assets use a read-only HF token via environment/secret manager, never a committed file.
+
+The target, draft and projector cache is re-used only when the configured exact byte size and SHA-256 match. Damaged or incomplete files are removed and downloaded again; startup must fail closed if verification fails.
+
 ## Recommended secret
 
-Create a Kaggle Secret:
-
-`MUSE_API_TOKEN`
-
-Use at least 32 printable characters.
-
-If the secret is missing, the notebook creates a cryptographically secure temporary token under:
-
-`/kaggle/working/.muse-secrets/MUSE_API_TOKEN`
-
-The directory uses mode `0700`, the file uses mode `0600`, the token value is never printed, and normal cleanup deletes the generated file.
+Set `MUSE_API_TOKEN` to a private value of at least 32 printable characters through a secret manager or the process environment. Do not commit it, print it to logs, or use the Cloudflare tunnel token as the API token.
 
 ## Run procedure
 
-1. Select **GPU T4 x2**.
-2. Enable Internet for the repository clone, Hugging Face downloads and optional Quick Tunnel.
-3. Do not attach model/runtime inputs; the notebook downloads HF weights and builds the pinned CUDA runtime when needed.
-4. Optionally configure `MUSE_API_TOKEN`.
-5. Use **Restart Session → Run All**.
-6. Review the final evidence and verdict lines before publishing notebook output.
+On a compatible GPU host (or for Kaggle qualification):
 
-A successful release qualification should include:
+1. Select the required GPU hardware and enable network access for first-time source/model downloads.
+2. Clone this fork and enter its directory.
+3. Set `MUSE_API_TOKEN` in the shell or secret manager.
+4. Run `./readiness.sh` and `./external.sh preflight`.
+5. Run `./external.sh start`, then `./external.sh status` and `./external.sh endpoint`.
+6. Read the effective Context/output fields; configure each desktop client to those actual values.
+7. Test a multi-turn tool loop and streaming before unattended use.
 
-```text
-KAGGLE_T4X2_GATE=PASS
-FORK_SOURCE_IDENTITY=PASS
-CANONICAL_ENVIRONMENT=PASS
-HF_MODEL_INTEGRITY_GATE=PASS
-DUAL_GPU_MEMORY_RESIDENCY=PASS
-LOCAL_AUTH_GATEWAY=PASS
-LOCAL_NONSTREAM_DEMO=PASS
-LOCAL_SSE_DEMO=PASS
-SEMANTIC_SANITY_GATE=PASS
-DFLASH2_ACTIVITY_GATE=PASS
-VISIBLE_ANSWER_GATE=PASS
-CORE_PRODUCTION_DEMO=PASS
-GATEWAY_RUNTIME_LIMITS_PROCESS_GATE=PASS
-PUBLIC_QUICK_TUNNEL=PASS
-CLOUDFLARED_SHA256_VERIFIED=PASS
-PUBLICATION_SECRET_SCAN=PASS
-PUBLICATION_ARTIFACT_BUNDLE=PASS
-OVERALL_PRODUCTION_DEMO=PASS
-AUTO_CLEANUP=PASS
-GENERATED_TOKEN_CLEANUP=PASS
-RERUN_SAME_NOTEBOOK=SUPPORTED
-FINAL_NOTEBOOK_RESULT=PASS
-NOTEBOOK_EXECUTION_COMPLETED=PASS
+Example:
+
+```bash
+export MUSE_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+./readiness.sh
+./external.sh preflight
+./external.sh start
+./external.sh status
+./external.sh endpoint
 ```
 
-## Publication evidence
+## Agent protocol contract
 
-The canonical successful run is documented in
-[`PUBLICATION_EVIDENCE.md`](PUBLICATION_EVIDENCE.md). The evidence bundle is a
-GitHub Release asset, not a tracked repository blob, so Git history remains
-small and the release-build evidence stays distinct from executed-run evidence.
+The gateway exposes an OpenAI-compatible `/v1/chat/completions` endpoint. It accepts `system`, `developer`, `user`, `assistant`, and `tool` message roles, assistant `tool_calls`, `tool_call_id` results, multimodal content-part arrays, both `max_tokens` and `max_completion_tokens`, and SSE. Run the CPU fake-backend suite to validate the contract before connecting an agent harness.
 
-The clean notebook source can be reused for repeated tests. Use `muse_stop()`
-to stop notebook-owned services or `muse_reset(...)` to clear runtime state,
-then run the notebook again. The recorded publication evidence represents one
-successful qualification run and does not claim a separately qualified second
-full Run All.
+### OpenCode
+
+Use an OpenAI-compatible provider with base URL `http://127.0.0.1:8090/v1`, model ID `muse-glimmer-30B`, API key from `MUSE_API_TOKEN`, and `limit.context` / `limit.output` matching the *effective* limits. The README contains a starter config.
+
+### Hermes Agent
+
+Use a custom OpenAI-compatible model/provider with the same base URL and model ID. Configure context/output using the actual runtime report, then validate assistant-tool-call → tool-result → assistant-final loops and a long multi-step session. Context declared by the client must not exceed the loaded server Context.
+
+### Claude Code through OmniRoute
+
+Use OmniRoute's Anthropic-compatible ingress for Claude Code and its OpenAI-compatible upstream to this gateway. Confirm the exact OmniRoute version converts tool-use messages, streamed events, cancellation, and multi-turn tool results correctly. This is a third-party protocol bridge, not a statement of official Anthropic support.
+
+## Recommended Cloudflare exposure
+
+The pinned `cloudflared 2026.10.0` installer verifies SHA-256 before executing the binary. Only the authenticated gateway is exposed; backend port 8088 remains loopback-only.
+
+Quick Tunnel (ephemeral URL):
+
+```bash
+export EXPOSURE_MODE=quick
+./external.sh start
+./external.sh endpoint
+```
+
+Named Tunnel (stable configured hostname):
+
+1. Create a Named Tunnel and Published Application/DNS route in Cloudflare Zero Trust.
+2. Export `EXPOSURE_MODE=named`, `TUNNEL_TOKEN` and `EXPOSURE_PUBLIC_URL=https://your-hostname.example` in the environment/secret manager.
+3. Run `./external.sh preflight` and `./external.sh start`.
+
+The token is kept in a runtime-state file with mode 0600 and removed at shutdown/failed startup. A token by itself does not create a public hostname/DNS route. `EXPOSURE_MODE=proxy` is the bring-your-own-transport option.
 
 ## Publication rule
 
-The repository notebook is published clean, with no cell outputs and no embedded credentials.
+The committed notebook should be clean, contain no outputs/secrets, and pass its SHA-256 sidecar check. An executed Kaggle notebook is evidence for that one run only. Do not publish a PASS claim until a fresh run on the current fork succeeds.
 
-Executed qualification notebooks and operational evidence are review artifacts; they are not committed as the canonical source notebook.
+## Safety and known limitations
 
-Before repository publication, verify the tracked notebook SHA-256 against:
-
-`notebooks/kaggle-production.ipynb.sha256`
+This is a single-owner personal inference server, not a multi-tenant commercial service. It has one active inference slot and a bounded waiting queue, no high-availability cluster, and no guarantee of 24/7 uptime on Kaggle. Protect the API token, keep port 8088 private, and review current source/runtime identities before deploying.
