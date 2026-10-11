@@ -352,7 +352,7 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             if not self.server.admission.try_acquire(wait_seconds=self.server.queue_wait_seconds):
                 self.server.telemetry.note_busy(request_id)
                 self._reject_json(429, P.build_error_body(
-                    "Another inference is in progress; the demo accepts one request at a time.",
+                    "The inference queue is full or its wait deadline expired; retry after the indicated delay.",
                     "invalid_request_error", P.ERROR_BUSY, request_id=request_id),
                     extra_headers=[("Retry-After", P.BUSY_RETRY_AFTER)])
                 return
