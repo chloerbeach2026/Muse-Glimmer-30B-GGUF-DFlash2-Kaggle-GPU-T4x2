@@ -389,7 +389,8 @@ PY
       python3 "$STATE_HELPER" mark-ready --state "$SERVER_STATE"
       echo "SERVER_CONTEXT_REQUESTED=$CONTEXT_SIZE"
       echo "SERVER_CONTEXT_EFFECTIVE=$candidate"
-      echo "SERVER_MAX_OUTPUT_TOKENS=$MAX_TOKENS"
+      effective_output=$(( candidate < MAX_TOKENS ? candidate : MAX_TOKENS ))
+      echo "SERVER_MAX_OUTPUT_TOKENS=$effective_output"
       if (( candidate < CONTEXT_SIZE )); then
         echo "CONTEXT_AUTO_FALLBACK=USED requested=$CONTEXT_SIZE effective=$candidate"
       else
