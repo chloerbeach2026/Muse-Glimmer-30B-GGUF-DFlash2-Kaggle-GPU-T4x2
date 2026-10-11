@@ -281,18 +281,19 @@ def main() -> int:
               {"role":"tool","tool_call_id":"call_1","content":"ok"},
               {"role":"developer","content":"Be careful"}
           ]})[0])
-    check("gateway full agent serving uses pinned HF sources and context",
-          "MODEL_SOURCE_MODE=hf" in cfg
-          and "CONTEXT_SIZE=131072" in cfg
-          and "MODEL_HF_REVISION=16f5840bef28e4018cf41a7ec9709d6fd89176f6" in cfg
-          and "HF_XET_NUM_CONCURRENT_RANGE_GETS=32" in cfg
-          and "DFLASH_HF_REVISION=43c7eadd41352a299ea8e0a36b3157978dd63596" in cfg)
     check("gateway /ready public route allowed", P.ROUTE_ALLOW is None)
 
     import auth_proxy  # noqa: E402
     check("gateway server version", getattr(auth_proxy.AuthProxyHandler, "server_version", None) == "MuseExternalProxy/1.0.0")
 
     cfg = ROOT.joinpath("config/default.env").read_text(encoding="utf-8")
+    check("gateway full agent serving uses pinned HF sources and context",
+          "MODEL_SOURCE_MODE=hf" in cfg
+          and "CONTEXT_SIZE=131072" in cfg
+          and "MODEL_HF_REVISION=16f5840bef28e4018cf41a7ec9709d6fd89176f6" in cfg
+          and "HF_XET_NUM_CONCURRENT_RANGE_GETS=32" in cfg
+          and "DFLASH_HF_REVISION=43c7eadd41352a299ea8e0a36b3157978dd63596" in cfg
+          and "MM_PROJ_SHA256=f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6" in cfg)
     ports = {}
     for line in cfg.splitlines():
         if line.startswith("#") or "=" not in line:
