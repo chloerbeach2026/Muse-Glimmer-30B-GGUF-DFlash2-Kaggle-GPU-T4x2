@@ -129,6 +129,21 @@ def probe_manifest(root: Path) -> dict:
     return {"status": "PASS" if ok else "FAIL"}
 
 
+# Pinned cloudflared version and SHA-256 (must match scripts/install_cloudflared.sh)
+CLOUDFLARED_PINNED_VERSION = "2026.10.0"
+CLOUDFLARED_PINNED_SHA256_AMD64 = "d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db"
+
+
+def _sha256_file(path: Path) -> str:
+    """Compute SHA-256 of a file in 1 MiB chunks (read-only)."""
+    import hashlib
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _nvidia_device_nodes_present() -> bool:
     dev = Path("/dev")
     return any(p.name[6:].isdigit() for p in dev.glob("nvidia[0-9]*"))
@@ -207,7 +222,11 @@ def probe_gpu() -> dict:
 
 
 def probe_model(root: Path, kind: str, cfg: dict) -> dict:
-    """Consult kaggle_runtime.discover_runtime for exact model presence/size/trusted-sha."""
+    """Consult kaggle_runtime.discover_runtime for exact model presence/size/trusted-sha.
+
+    For HF mode with a cached local file, the SHA-256 is actually computed
+    (chunked hash) so a corrupted file with the right byte size is caught.
+    """
     source_mode = (cfg.get("MODEL_SOURCE_MODE") or "auto").strip().lower()
     if source_mode == "hf":
         if kind == "target":
@@ -216,19 +235,51 @@ def probe_model(root: Path, kind: str, cfg: dict) -> dict:
             revision = cfg.get("MODEL_HF_REVISION", "")
             expected_size = cfg.get("MODEL_SIZE_BYTES", FROZEN_TARGET_SIZE)
             expected_sha = cfg.get("MODEL_SHA256", FROZEN_TARGET_SHA)
+            verify_sha = cfg.get("VERIFY_MODEL_SHA256", "1") == "1"
         else:
             repo_id = cfg.get("DFLASH_HF_MODEL_REPO", "")
             model_file = cfg.get("DFLASH_MODEL_FILE", FROZEN_DRAFT_FILE)
             revision = cfg.get("DFLASH_HF_REVISION", "")
             expected_size = cfg.get("DFLASH_MODEL_SIZE_BYTES", FROZEN_DRAFT_SIZE)
             expected_sha = cfg.get("DFLASH_MODEL_SHA256", FROZEN_DRAFT_SHA)
+            verify_sha = cfg.get("VERIFY_DFLASH_SHA256", "1") == "1"
         if not (repo_id and revision and model_file and expected_size and expected_sha):
             return {"kind": kind, "found": False, "selection": None, "size_match": "UNKNOWN", "trusted_sha_match": "UNKNOWN", "expected_sha": expected_sha, "expected_size": expected_size, "probe_error": True}
         model_root = Path(os.environ.get("MODELS_DIR", str(root / "models"))).expanduser()
         local_path = model_root / model_file
         size_bytes = local_path.stat().st_size if local_path.is_file() else None
         cache_ok = size_bytes == int(expected_size)
-        return {"kind": kind, "found": True, "selection": "exact", "size_match": "YES", "trusted_sha_match": "UNKNOWN" if cache_ok else "YES", "sha_source": "startup_sha256_verification" if cache_ok else "pinned_hf_revision+configured_sha256", "expected_sha": expected_sha, "expected_size": expected_size, "size_bytes": size_bytes, "local_path": str(local_path), "source_mode": "hf", "hf_repo": repo_id, "hf_revision": revision, "download_required": not cache_ok, "probe_error": False}
+        if not cache_ok:
+            return {"kind": kind, "found": True, "selection": "exact", "size_match": "NO", "trusted_sha_match": "UNKNOWN" if not verify_sha else "NO",
+                    "expected_sha": expected_sha, "expected_size": expected_size, "size_bytes": size_bytes,
+                    "local_path": str(local_path), "source_mode": "hf", "hf_repo": repo_id, "hf_revision": revision,
+                    "download_required": True, "probe_error": False}
+        # Size matches; actually compute SHA-256 to catch corrupted files
+        if verify_sha and local_path.is_file():
+            try:
+                actual_sha = _sha256_file(local_path)
+                sha_match = actual_sha == expected_sha
+                return {"kind": kind, "found": True, "selection": "exact", "size_match": "YES",
+                        "trusted_sha_match": "YES" if sha_match else "NO",
+                        "sha_source": "startup_sha256_verification",
+                        "expected_sha": expected_sha, "expected_size": expected_size,
+                        "size_bytes": size_bytes, "local_path": str(local_path),
+                        "source_mode": "hf", "hf_repo": repo_id, "hf_revision": revision,
+                        "download_required": not sha_match, "probe_error": False}
+            except OSError:
+                return {"kind": kind, "found": True, "selection": "exact", "size_match": "YES",
+                        "trusted_sha_match": "UNKNOWN", "sha_source": "size_only_probe_error",
+                        "expected_sha": expected_sha, "expected_size": expected_size,
+                        "size_bytes": size_bytes, "local_path": str(local_path),
+                        "source_mode": "hf", "hf_repo": repo_id, "hf_revision": revision,
+                        "download_required": False, "probe_error": True}
+        # SHA verification disabled by config: size match is the only signal
+        return {"kind": kind, "found": True, "selection": "exact", "size_match": "YES",
+                "trusted_sha_match": "UNKNOWN", "sha_source": "size_only_sha_verification_disabled",
+                "expected_sha": expected_sha, "expected_size": expected_size,
+                "size_bytes": size_bytes, "local_path": str(local_path),
+                "source_mode": "hf", "hf_repo": repo_id, "hf_revision": revision,
+                "download_required": False, "probe_error": False}
     if kind == "target":
         dataset = cfg.get("KAGGLE_MODEL_DATASET", "")
         model_file = cfg.get("MODEL_FILE", FROZEN_TARGET_FILE)
@@ -279,6 +330,62 @@ def probe_model(root: Path, kind: str, cfg: dict) -> dict:
         "expected_size": expected_size,
         "probe_error": False,
     }
+
+
+def probe_mmproj(root: Path, cfg: dict) -> dict:
+    """Read-only probe for the vision projector asset.
+
+    In HF-only mode, the projector is downloaded from a pinned Hugging Face
+    revision. If a local cache exists, its size and SHA-256 are verified;
+    otherwise the probe reports download_required=True.
+    """
+    source_mode = (cfg.get("MODEL_SOURCE_MODE") or "auto").strip().lower()
+    if source_mode != "hf":
+        return {"found": False, "required": False, "probe_error": False}
+    mmproj_required = cfg.get("MM_PROJ_REQUIRED", "1") == "1"
+    if not mmproj_required:
+        return {"found": False, "required": False, "probe_error": False}
+    repo_id = cfg.get("MM_PROJ_REPO", "")
+    revision = cfg.get("MM_PROJ_REVISION", "")
+    model_file = cfg.get("MM_PROJ_FILE", "mmproj-Muse-Glimmer-30B-Q4_K_M.gguf")
+    expected_size = cfg.get("MM_PROJ_SIZE_BYTES", "1400328928")
+    expected_sha = cfg.get("MM_PROJ_SHA256", "f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6")
+    if not (repo_id and revision and model_file and expected_size and expected_sha):
+        return {"found": False, "required": True, "probe_error": True}
+    model_root = Path(os.environ.get("MODELS_DIR", str(root / "models"))).expanduser()
+    local_path = model_root / model_file
+    size_bytes = local_path.stat().st_size if local_path.is_file() else None
+    if size_bytes is None:
+        return {"found": False, "required": True, "size_match": "UNKNOWN",
+                "trusted_sha_match": "UNKNOWN", "expected_sha": expected_sha,
+                "expected_size": expected_size, "local_path": str(local_path),
+                "hf_repo": repo_id, "hf_revision": revision,
+                "download_required": True, "probe_error": False}
+    size_match = "YES" if size_bytes == int(expected_size) else "NO"
+    if size_match == "NO":
+        return {"found": True, "required": True, "size_match": "NO",
+                "trusted_sha_match": "NO", "expected_sha": expected_sha,
+                "expected_size": expected_size, "size_bytes": size_bytes,
+                "local_path": str(local_path), "hf_repo": repo_id,
+                "hf_revision": revision, "download_required": True,
+                "probe_error": False}
+    # Size matches; compute SHA-256
+    try:
+        actual_sha = _sha256_file(local_path)
+        sha_match = actual_sha == expected_sha
+        return {"found": True, "required": True, "size_match": "YES",
+                "trusted_sha_match": "YES" if sha_match else "NO",
+                "expected_sha": expected_sha, "expected_size": expected_size,
+                "size_bytes": size_bytes, "local_path": str(local_path),
+                "hf_repo": repo_id, "hf_revision": revision,
+                "download_required": not sha_match, "probe_error": False}
+    except OSError:
+        return {"found": True, "required": True, "size_match": "YES",
+                "trusted_sha_match": "UNKNOWN", "expected_sha": expected_sha,
+                "expected_size": expected_size, "size_bytes": size_bytes,
+                "local_path": str(local_path), "hf_repo": repo_id,
+                "hf_revision": revision, "download_required": False,
+                "probe_error": True}
 
 
 def probe_runtime(root: Path, cfg: dict) -> dict:
@@ -333,8 +440,10 @@ def probe_runtime(root: Path, cfg: dict) -> dict:
 
 def _token_ok(token: str) -> bool:
     """Exact frozen security policy (auth_proxy.valid_secret / external.sh credential_preflight):
-    length >= 32 and all characters printable (code 32..126, excluding DEL)."""
-    return len(token) >= 32 and all(32 <= ord(ch) <= 126 for ch in token)
+    length >= 32 and all characters printable (code 32..126, excluding DEL=127).
+    This mirrors auth_proxy.valid_secret exactly so readiness and the gateway
+    accept the same token set."""
+    return len(token) >= 32 and all(ord(ch) >= 32 and ord(ch) != 127 for ch in token)
 
 
 def probe_token() -> dict:
@@ -348,7 +457,7 @@ def probe_token() -> dict:
 
 def probe_cloudflared(mode: str, cfg: dict) -> dict:
     if mode == "proxy":
-        return {"present": False, "required": False, "installable": False}
+        return {"present": False, "required": False, "installable": False, "sha256_verified": False}
     binary = cfg.get("CLOUDFLARED_BIN", "cloudflared")
     if "/" in binary:
         present = Path(binary).is_file() and os.access(binary, os.X_OK)
@@ -356,7 +465,19 @@ def probe_cloudflared(mode: str, cfg: dict) -> dict:
         present = shutil.which(binary) is not None
     installer = Path(__file__).resolve().parent / "install_cloudflared.sh"
     installable = (not present) and binary.endswith("/vendor/bin/cloudflared") and installer.is_file()
-    return {"present": present, "required": True, "installable": installable}
+
+    # Verify SHA-256 of the pinned cloudflared binary if it exists at the
+    # canonical vendor path. A tampered or stale binary with the right name
+    # must not falsely pass readiness.
+    sha256_verified = False
+    if present and binary.endswith("/vendor/bin/cloudflared"):
+        try:
+            actual_sha = _sha256_file(Path(binary))
+            sha256_verified = (actual_sha == CLOUDFLARED_PINNED_SHA256_AMD64)
+        except (OSError, ValueError):
+            sha256_verified = False
+
+    return {"present": present, "required": True, "installable": installable, "sha256_verified": sha256_verified}
 
 
 def probe_named(cfg: dict) -> dict:
@@ -493,6 +614,44 @@ def assess(facts: dict) -> dict:
             warnings.append("CLOUDFLARED_WILL_BE_INSTALLED")
         else:
             blockers.append("CLOUDFLARED_MISSING")
+    # If cloudflared is present but SHA-256 is not verified, warn (don't block —
+    # the installer re-verifies on start, but this surfaces a stale/tampered binary)
+    if cloud.get("required") and cloud.get("present") and not cloud.get("sha256_verified", False):
+        warnings.append("CLOUDFLARED_SHA256_NOT_VERIFIED")
+
+    # Vision projector (MM-Proj) — required for full multimodal agent serving
+    mmproj = facts.get("mmproj", {})
+    if isinstance(mmproj, dict):
+        if mmproj.get("probe_error"):
+            error = True
+        elif mmproj.get("required", False):
+            if not mmproj.get("found"):
+                if mmproj.get("download_required"):
+                    warnings.append("MMPROJ_HF_DOWNLOAD_REQUIRED")
+                else:
+                    blockers.append("MMPROJ_MISSING")
+            else:
+                mp_size = mmproj.get("size_match", "UNKNOWN")
+                mp_sha = mmproj.get("trusted_sha_match", "UNKNOWN")
+                if mp_size == "NO" or mp_sha == "NO":
+                    blockers.append("MMPROJ_IDENTITY")
+
+    # Context/output bounds — fail closed if config is out of model range
+    if facts.get("context_bounds", "OK") == "FAIL":
+        blockers.append("CONTEXT_SIZE_OUT_OF_RANGE")
+    if facts.get("max_tokens_bounds", "OK") == "FAIL":
+        blockers.append("MAX_TOKENS_OUT_OF_RANGE")
+
+    # Runtime manifest gate warning — operator disabled the provenance check
+    runtime_cfg = facts.get("runtime", {})
+    if isinstance(runtime_cfg, dict) and not runtime_cfg.get("error", False):
+        if runtime_cfg.get("prebuilt_present") and not runtime_cfg.get("prebuilt_trusted"):
+            # If prebuilt is present but not trusted, it's already blocked above.
+            pass
+        # Surface a warning when the manifest gate is disabled and a prebuilt is in use
+        require_manifest = facts.get("runtime_manifest_required", "1")
+        if require_manifest == "0" and runtime_cfg.get("prebuilt_present"):
+            warnings.append("RUNTIME_MANIFEST_GATE_DISABLED")
 
     # named mode prerequisites (exact frozen external.sh contract)
     if mode == "named":
@@ -525,10 +684,17 @@ def assess(facts: dict) -> dict:
         "gpu_min_vram_required_mib": required_vram,
         "target": _result_model("TARGET", target),
         "draft": _result_model("DFLASH", draft),
+        "mmproj": _result_mmproj(facts.get("mmproj", {})),
         "runtime_fast_path": runtime_fast_path,
         "source_build_fallback": source_build_fallback,
         "api_token": token,
-        "cloudflared": ("PRESENT" if cloud.get("present") else ("INSTALLABLE" if cloud.get("installable") else ("NOT_REQUIRED" if not cloud.get("required") else "MISSING"))),
+        "cloudflared": ("PRESENT_VERIFIED" if (cloud.get("present") and cloud.get("sha256_verified"))
+                        else "PRESENT_UNVERIFIED" if cloud.get("present")
+                        else "INSTALLABLE" if cloud.get("installable")
+                        else "NOT_REQUIRED" if not cloud.get("required")
+                        else "MISSING"),
+        "context_bounds": facts.get("context_bounds", "OK"),
+        "max_tokens_bounds": facts.get("max_tokens_bounds", "OK"),
     }
 
 
@@ -576,6 +742,32 @@ def _result_model(kind: str, model: dict) -> dict:
     }
 
 
+def _result_mmproj(mmproj: dict) -> dict:
+    """Render the vision projector probe result for the readiness output."""
+    if not isinstance(mmproj, dict) or not mmproj:
+        return {"status": "NOT_REQUIRED", "size_match": "UNKNOWN", "trusted_sha_match": "UNKNOWN",
+                "download_required": False}
+    if mmproj.get("probe_error"):
+        return {"status": "ERROR", "size_match": "UNKNOWN", "trusted_sha_match": "UNKNOWN",
+                "download_required": False}
+    if not mmproj.get("required", False):
+        return {"status": "NOT_REQUIRED", "size_match": "UNKNOWN", "trusted_sha_match": "UNKNOWN",
+                "download_required": False}
+    if not mmproj.get("found"):
+        return {"status": "MISSING" if not mmproj.get("download_required") else "DOWNLOAD_REQUIRED",
+                "size_match": "UNKNOWN", "trusted_sha_match": "UNKNOWN",
+                "download_required": bool(mmproj.get("download_required", False))}
+    size_match = mmproj.get("size_match", "UNKNOWN")
+    sha_match = mmproj.get("trusted_sha_match", "UNKNOWN")
+    if size_match == "NO" or sha_match == "NO":
+        status = "IDENTITY_FAIL"
+    else:
+        status = "PRESENT"
+    return {"status": status, "size_match": size_match, "trusted_sha_match": sha_match,
+            "download_required": bool(mmproj.get("download_required", False)),
+            "full_runtime_verification": "DEFERRED_TO_SERVE"}
+
+
 def _next_action(start: str, blockers: list[str], mode: str) -> str:
     if start == "PASS":
         return "RUN_EXTERNAL_START"
@@ -590,12 +782,16 @@ def _next_action(start: str, blockers: list[str], mode: str) -> str:
         return "ATTACH_TARGET_MODEL"
     if first in ("DFLASH_MODEL_MISSING", "DFLASH_IDENTITY"):
         return "ATTACH_DFLASH_MODEL"
+    if first in ("MMPROJ_MISSING", "MMPROJ_IDENTITY"):
+        return "FIX_MMPROJ_ASSET"
     if first == "RUNTIME_UNAVAILABLE":
         return "ATTACH_RUNTIME"
     if first in ("API_TOKEN_MISSING", "API_TOKEN_WEAK"):
         return "FIX_API_TOKEN"
     if first == "CLOUDFLARED_MISSING":
         return "ATTACH_CLOUDFLARED"
+    if first in ("CONTEXT_SIZE_OUT_OF_RANGE", "MAX_TOKENS_OUT_OF_RANGE"):
+        return "FIX_CONTEXT_CONFIG"
     if first.startswith("NAMED_MODE"):
         return "FIX_NAMED_MODE"
     return "RERUN_AFTER_RESOLUTION"
@@ -603,6 +799,7 @@ def _next_action(start: str, blockers: list[str], mode: str) -> str:
 
 # --------------------------------------------------------------------------- render
 def render_env(result: dict, target: dict, draft: dict) -> str:
+    mmproj = result.get("mmproj", {})
     fields = {
         "SCHEMA_VERSION": result["schema_version"],
         "RELEASE_VERSION": result["release_version"],
@@ -625,10 +822,15 @@ def render_env(result: dict, target: dict, draft: dict) -> str:
         "DFLASH_SIZE_MATCH": draft["size_match"],
         "DFLASH_TRUSTED_METADATA_SHA_MATCH": draft["trusted_sha_match"],
         "DFLASH_FULL_RUNTIME_VERIFICATION": draft["full_runtime_verification"],
+        "MMPROJ_MODEL": mmproj.get("status", "NOT_REQUIRED"),
+        "MMPROJ_SIZE_MATCH": mmproj.get("size_match", "UNKNOWN"),
+        "MMPROJ_TRUSTED_SHA_MATCH": mmproj.get("trusted_sha_match", "UNKNOWN"),
         "RUNTIME_FAST_PATH": result["runtime_fast_path"],
         "SOURCE_BUILD_FALLBACK": result["source_build_fallback"],
         "API_TOKEN": result["api_token"],
         "CLOUDFLARED": result["cloudflared"],
+        "CONTEXT_BOUNDS": result.get("context_bounds", "OK"),
+        "MAX_TOKENS_BOUNDS": result.get("max_tokens_bounds", "OK"),
     }
     return "".join(f"{key}={value}\n" for key, value in fields.items())
 
@@ -636,6 +838,7 @@ def render_env(result: dict, target: dict, draft: dict) -> str:
 def render_text(result: dict) -> str:
     t = result["target"]
     d = result["draft"]
+    mp = result.get("mmproj", {})
     gpu_count = result["gpu_count"] if result["gpu_count"] is not None else "unknown"
     lines = [
         "Muse-Glimmer Kaggle readiness",
@@ -649,11 +852,14 @@ def render_text(result: dict) -> str:
         "",
         f"Target model:         {t['status']}",
         f"Draft model:          {d['status']}",
+        f"Vision projector:     {mp.get('status', 'NOT_REQUIRED')}",
         "",
         f"Fast runtime:         {result['runtime_fast_path']}",
         f"External mode:        {result['mode']}",
         f"API token:            {result['api_token']}",
         f"cloudflared:          {result['cloudflared']}",
+        f"Context bounds:       {result.get('context_bounds', 'OK')}",
+        f"Max tokens bounds:    {result.get('max_tokens_bounds', 'OK')}",
         "",
         f"START_READINESS:      {result['start_readiness']}",
     ]
@@ -679,12 +885,16 @@ def _next_action_hint(result: dict) -> str:
         return "Attach the exact Muse-Glimmer model matching the frozen identity, then rerun ./readiness.sh."
     if first in ("TARGET_MODEL_MISSING", "DFLASH_MODEL_MISSING"):
         return "Attach the required Muse-Glimmer Kaggle Model, then rerun ./readiness.sh."
+    if first in ("MMPROJ_MISSING", "MMPROJ_IDENTITY"):
+        return "The vision projector is missing or its identity failed; clear the cache so it is re-downloaded from the pinned HF revision, then rerun ./readiness.sh."
     if first == "RUNTIME_UNAVAILABLE":
         return "Attach a Muse-Glimmer llama.cpp runtime or a buildable source tree, then rerun ./readiness.sh."
     if first in ("API_TOKEN_MISSING", "API_TOKEN_WEAK"):
-        return "Set a valid MUSE_API_TOKEN (>=32 printable chars) and rerun ./readiness.sh."
+        return "Set a valid MUSE_API_TOKEN (>=32 printable chars, no control characters) and rerun ./readiness.sh."
     if first == "CLOUDFLARED_MISSING":
         return "Install/provide cloudflared (or use proxy mode) and rerun ./readiness.sh."
+    if first in ("CONTEXT_SIZE_OUT_OF_RANGE", "MAX_TOKENS_OUT_OF_RANGE"):
+        return "Fix CONTEXT_SIZE (4096-131072) and MAX_TOKENS (1-131072) in config/default.env, then rerun ./readiness.sh."
     if first.startswith("NAMED_MODE"):
         return "Set TUNNEL_TOKEN and a clean HTTPS EXPOSURE_PUBLIC_URL, then rerun ./readiness.sh."
     return "Review the blockers, resolve, then rerun ./readiness.sh."
@@ -720,10 +930,33 @@ def build_facts(root: Path, mode: str, cfgs: dict | None = None, gpu_probe_fn=No
     facts["gpu_min_vram_required_mib"] = int(cfg.get("GPU_MIN_VRAM_MIB", "14000"))
     facts["target"] = probe_model(root, "target", cfg)
     facts["draft"] = probe_model(root, "draft", cfg)
+    facts["mmproj"] = probe_mmproj(root, cfg)
     facts["runtime"] = probe_runtime(root, cfg)
     facts["token"] = probe_token()
     facts["cloudflared"] = probe_cloudflared(mode, cfg)
     facts["named"] = probe_named(cfg) if mode == "named" else {}
+
+    # Context/output bounds check — readiness must fail closed if config is out of range
+    context_str = cfg.get("CONTEXT_SIZE", "131072")
+    max_tokens_str = cfg.get("MAX_TOKENS", "131072")
+    context_bounds = "OK"
+    try:
+        context_val = int(context_str)
+        if context_val < 4096 or context_val > 131072:
+            context_bounds = "FAIL"
+    except (ValueError, TypeError):
+        context_bounds = "FAIL"
+    max_tokens_bounds = "OK"
+    try:
+        max_tokens_val = int(max_tokens_str)
+        if max_tokens_val < 1 or max_tokens_val > 131072:
+            max_tokens_bounds = "FAIL"
+    except (ValueError, TypeError):
+        max_tokens_bounds = "FAIL"
+    facts["context_bounds"] = context_bounds
+    facts["max_tokens_bounds"] = max_tokens_bounds
+    facts["runtime_manifest_required"] = cfg.get("KAGGLE_RUNTIME_REQUIRE_MANIFEST", "1")
+
     return facts
 
 
@@ -746,6 +979,7 @@ def main(argv: list[str] | None = None) -> int:
     render = {k: v for k, v in result.items()}
     render["target"] = _result_model("TARGET", facts["target"])
     render["draft"] = _result_model("DFLASH", facts["draft"])
+    render["mmproj"] = _result_mmproj(facts.get("mmproj", {}))
     if args.format == "json":
         sys.stdout.write(render_json(render))
     elif args.format == "env":

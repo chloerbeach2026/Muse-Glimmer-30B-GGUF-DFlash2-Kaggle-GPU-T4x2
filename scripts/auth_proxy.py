@@ -236,15 +236,17 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
                      extra_headers: Iterable[tuple[str, str]] = ()) -> None:
         json_error(self, status, error_body, authenticate=authenticate, extra_headers=extra_headers)
 
-    def _serve_ready(self, request_id: str, started: float) -> None:
+    def _serve_ready(self, request_id: str, started: float, admitted_here: bool = False) -> None:
         """Serve gateway readiness by probing the real backend health route.
 
         llama-server exposes ``/health`` but not the Muse public ``/ready``
         contract.  Never forward the public readiness path verbatim and never
         expose the backend response body.
+
+        Note: ``admitted_here`` is always False for GET /ready (it is a
+        non-inference route), but the parameter is accepted for contract
+        symmetry with the inference path.
         """
-        if admitted_here:
-            self.server.telemetry.note_admitted(request_id)
 
         backend_host = self.server.backend_host
         backend_port = self.server.backend_port
@@ -379,7 +381,7 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             self.server.telemetry.note_request(request_id, self.command == "HEAD" and 200 or None)
 
         if self.command == "GET" and target.path == READY_PUBLIC_PATH:
-            self._serve_ready(request_id, started)
+            self._serve_ready(request_id, started, admitted_here)
             return
 
         # Validate JSON payload for chat/completions before forwarding.
@@ -463,6 +465,9 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
                         function["arguments"] = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
 
             body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            # Record admission only after all validation passes and the request
+            # is about to be forwarded to the backend.
+            self.server.telemetry.note_admitted(request_id)
 
         backend_host = self.server.backend_host
         backend_port = self.server.backend_port

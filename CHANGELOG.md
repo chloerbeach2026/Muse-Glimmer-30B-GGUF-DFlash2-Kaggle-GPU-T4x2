@@ -57,9 +57,20 @@ recorded in this file.
   `POST /v1/chat/completions` (OpenAI-compatible, SSE streaming supported).
 - **Concurrency:** one request at a time; a busy gateway responds
   `429` with `Retry-After: 5` and a `muse_demo_busy` envelope.
-- **Defaults:** `TEMPERATURE=1.0`, `TOP_P=0.95`, `TOP_K=64`, `SEED=42`,
-  `CONTEXT_SIZE=4096`, `MAX_TOKENS=256`, `REASONING_STRENGTH=low`,
-  `REASONING_BUDGET=64`, `REQUEST_TIMEOUT=3600`, `PROMPT_LIMIT=3`.
+- **Persistent serving profile (`agent`):** `TEMPERATURE=1.0`, `TOP_P=0.95`,
+  `TOP_K=64`, `SEED=42`, `CONTEXT_SIZE=131072`, `MAX_TOKENS=131072`,
+  `REASONING_STRENGTH=high`, `REASONING_BUDGET=0`, `MIN_ANSWER_TOKENS=1024`,
+  `PROMPT_LIMIT=0`, `REQUEST_TIMEOUT=3600`, `AUTO_CONTEXT_FALLBACK=1`.
+  The requested 131,072-token Context is the model target; the server attempts
+  it first with quantized KV cache and falls back to smaller values only on
+  recognized startup/resource failure (OOM, allocation failure, KV cache
+  failure). The effective Context/output is reported by `./serve.sh status`
+  and the `X-Muse-Effective-Context-Size` / `X-Muse-Max-Output-Tokens`
+  response headers.
+- **Smoke profile (CI/fake-backend):** `CONTEXT_SIZE=4096`, `MAX_TOKENS=256`,
+  `REASONING_STRENGTH=low`, `REASONING_BUDGET=64`. This profile is used only
+  by `./demo-smoke.sh` against a fake loopback backend and never by the
+  persistent serving stack.
 
 ### Security
 

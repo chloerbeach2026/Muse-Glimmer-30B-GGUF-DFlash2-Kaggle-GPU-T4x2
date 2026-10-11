@@ -31,7 +31,7 @@ the frozen runtime contract intact and stay honest about scope.
 
 ```bash
 # Fresh repo
-git clone https://github.com/dangkhoa2016/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2.git
+git clone https://github.com/chloerbeach2026/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2.git
 cd Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2
 
 # Deterministic CPU-only contract suite

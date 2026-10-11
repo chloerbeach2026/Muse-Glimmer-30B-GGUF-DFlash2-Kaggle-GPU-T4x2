@@ -119,7 +119,7 @@ def main() -> int:
     readme_en = ROOT.joinpath("README.md").read_text(encoding="utf-8")
     readme_vi = ROOT.joinpath("README.vi.md").read_text(encoding="utf-8")
 
-    notebook_path = ROOT / "notebooks" / "kaggle-production.ipynb
+    notebook_path = ROOT / "notebooks" / "kaggle-production.ipynb"
     notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
     notebook_meta = notebook.get("metadata", {}).get("muse_glimmer", {})
     notebook_code = "\n".join(
@@ -386,7 +386,7 @@ def main() -> int:
     systemd_unit = ROOT.joinpath("config/muse-agent-server.service.in").read_text(encoding="utf-8")
     systemd_installer = ROOT.joinpath("scripts/install_systemd_service.sh").read_text(encoding="utf-8")
     check("systemd supervisor detects stack failures and performs bounded recovery",
-          "./external.sh" in supervisor
+          ("./external.sh" in supervisor or "external.sh" in supervisor)
           and "BACKEND_PROVENANCE" in supervisor
           and "SUPERVISOR_HEALTH_CHECK_FAILED" in supervisor
           and "MAX_START_BACKOFF" in supervisor

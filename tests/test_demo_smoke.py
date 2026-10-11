@@ -118,6 +118,15 @@ class HangingBackendHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         time.sleep(60)
 
+    def do_POST(self):
+        # Hanging backend for streaming POST: send SSE headers then never
+        # send any data, so the proxy's stream-read loop blocks until
+        # idle/hard timeout fires.
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        time.sleep(60)
+
 
 def free_port():
     with socket.socket() as s:

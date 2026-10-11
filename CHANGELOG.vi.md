@@ -56,9 +56,19 @@ trong tệp này.
   `POST /v1/chat/completions` (tương thích OpenAI, hỗ trợ streaming SSE).
 - **Đồng thời:** một yêu cầu tại một thời điểm; lúc busy gateway trả
   `429` kèm `Retry-After: 5` và envelop `muse_demo_busy`.
-- **Mặc định:** `TEMPERATURE=1.0`, `TOP_P=0.95`, `TOP_K=64`, `SEED=42`,
-  `CONTEXT_SIZE=4096`, `MAX_TOKENS=256`, `REASONING_STRENGTH=low`,
-  `REASONING_BUDGET=64`, `REQUEST_TIMEOUT=3600`, `PROMPT_LIMIT=3`.
+- **Profile serving liên tục (`agent`):** `TEMPERATURE=1.0`, `TOP_P=0.95`,
+  `TOP_K=64`, `SEED=42`, `CONTEXT_SIZE=131072`, `MAX_TOKENS=131072`,
+  `REASONING_STRENGTH=high`, `REASONING_BUDGET=0`, `MIN_ANSWER_TOKENS=1024`,
+  `PROMPT_LIMIT=0`, `REQUEST_TIMEOUT=3600`, `AUTO_CONTEXT_FALLBACK=1`.
+  Context 131.072 token là mục tiêu của model; server thử trước với KV cache
+  lượng hóa và chỉ fallback về giá trị nhỏ hơn khi gặp lỗi startup/resource
+  (OOM, allocation failure, KV cache failure). Context/output hiệu dụng được
+  báo cáo bởi `./serve.sh status` và các response header
+  `X-Muse-Effective-Context-Size` / `X-Muse-Max-Output-Tokens`.
+- **Profile smoke (CI/fake-backend):** `CONTEXT_SIZE=4096`, `MAX_TOKENS=256`,
+  `REASONING_STRENGTH=low`, `REASONING_BUDGET=64`. Profile này chỉ được dùng
+  bởi `./demo-smoke.sh` với fake loopback backend, không bao giờ dùng cho
+  serving stack liên tục.
 
 ### Bảo mật
 
