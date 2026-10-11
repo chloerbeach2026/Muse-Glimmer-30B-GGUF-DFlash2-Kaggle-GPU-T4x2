@@ -265,6 +265,7 @@ def main() -> int:
 
     sys.path.insert(0, str(ROOT / "scripts"))
     import demo_policy as P  # noqa: E402
+    import auth_proxy  # noqa: E402
 
     check("gateway sequential inference with bounded queue", P.MAX_ACTIVE_INFERENCE == 1 and P.MAX_QUEUED_INFERENCE > 0)
     check("gateway bounded agent queue", P.MAX_QUEUED_INFERENCE == 8 and P.QUEUE_WAIT_SECONDS == 600.0)
@@ -294,7 +295,6 @@ def main() -> int:
           and "X-Muse-Effective-Context-Size" in auth_proxy.AuthProxyHandler._proxy.__code__.co_consts)
     check("gateway /ready public route allowed", P.ROUTE_ALLOW is None)
 
-    import auth_proxy  # noqa: E402
     check("gateway server version", getattr(auth_proxy.AuthProxyHandler, "server_version", None) == "MuseExternalProxy/1.0.0")
 
     cfg = ROOT.joinpath("config/default.env").read_text(encoding="utf-8")
