@@ -155,25 +155,11 @@ gle có thể thay đổi lớp mount bên ngoài, vì vậy notebook và runtim
 
 ## Xác minh toàn vẹn / hash
 
-Mỗi lần `./serve.sh start` (và do đó mỗi `./external.sh start`) trong chế độ
-strict đều xác minh:
+Mỗi lần `./serve.sh start` xác minh source manifest, exact identity của target model, DFlash2, SHA-256 của vision projector và commit llama.cpp đã pin. Asset model chỉ đến từ revision Hugging Face bất biến trong [Model assets](#model-assets-chỉ-tải-từ-hugging-face); server không đọc model gắn từ Kaggle.
 
-1. `scripts/source_manifest.py check` — cây nguồn phải khớp
-   `SOURCE_MANIFEST.sha256` (chỉ vô hiệu bằng `SOURCE_INTEGRITY_MODE=warn|off`).
-2. Commit llama.cpp runtime cố định và manifest đã xác minh của nó
-   (`LLAMA_RUNTIME_MANIFEST_VERIFIED=1` với runtime dựng sẵn).
-3. Kích thước và SHA-256 của target model (`17306324000` /
-   `0d3fc85f61d10fdc84072f0bba6005d61c1ac5605a2627b0fd5ea4ff8194c384`).
-4. Kích thước và SHA-256 của DFlash2 draft (`1645657280` /
-   `93dbfb6f88e4645dec1347cf93f9d6fc80b90d413038722385b2a8e53565c949`).
+Target, draft và projector phải khớp cả dung lượng byte lẫn SHA-256 đã cấu hình. Asset cache bị thiếu hoặc hỏng sẽ được xóa và tải lại bằng cơ chế cache/resume của Hugging Face Hub, `HF_DOWNLOAD_WORKERS=32` và `HF_XET_NUM_CONCURRENT_RANGE_GETS=32`. Nếu identity sai, startup dừng trước khi phục vụ model. Notebook ghi lại identity asset đã xác minh cùng Context/output thực tế được load vào runtime.
 
-Xác minh thủ công tệp mô hình đính kèm:
-
-```bash
-find /kaggle/input -type f -name 'Muse-Glimmer-30B-Q4_K_M.gguf' -print -exec sha256sum {} \;
-find /kaggle/input -type f -name 'Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf' -print -exec sha256sum {} \;
-```
-
+Để chạy kiểm tra deterministic chỉ CPU, dùng `./demo-smoke.sh`; để qualification phần cứng T4x2, dùng notebook bên dưới. Cấu hình tĩnh và test CPU thành công không thay thế cho một lần chạy GPU thật.
 ## Notebook production canonical
 
 Để chạy production-style trên Kaggle theo hướng dẫn đầy đủ, sử dụng [`notebooks/kaggle-production.ipynb`](notebooks/kaggle-production.ipynb).
@@ -190,63 +176,46 @@ Run Kaggle T4 x2 trong publication record lịch sử thuộc source upstream `v
 
 Xem [tài liệu publication evidence](docs/PUBLICATION_EVIDENCE.vi.md) để biết phạm vi các claim lịch sử và cách xác minh.
 
-## Khởi động nhanh trên Kaggle T4x2
+## Khởi động personal agent server
 
 ```bash
-# 1) Tạo notebook/session Kaggle với accelerator "GPU T4 x2".
-# 2) Đính kèm đúng các Kaggle resource/variation trong "Tệp mô hình".
-# 3) Clone repository này vào /kaggle/working.
-
 git clone https://github.com/chloerbeach2026/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2.git
 cd Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2
 
-# 4) Kiểm tra notebook sẵn sàng (chỉ đọc; không cần GPU/mô hình).
+# Chỉ đặt secret trong shell/secret manager; không commit secret.
+export MUSE_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+
+# Kiểm tra chỉ đọc, sau đó khởi động model/runtime HF-only và gateway.
 ./readiness.sh
-
-# 5) Đặt secret gateway của bạn (>= 32 ký tự in được).
-export MUSE_API_TOKEN='thay-bang-secret-it-nhat-32-ky-tu'
-
-# 6) Kiểm tra cấu hình external mà không khởi động gì.
 ./external.sh preflight
-
-# 7) Khởi động backend + gateway + tunnel công khai (EXPOSURE_MODE=quick mặc định).
 ./external.sh start
-
-# 8) In endpoint HTTPS công khai.
 ./external.sh endpoint
-
-# 9) Xem trạng thái tổng hợp backend/exposure.
 ./external.sh status
 ```
 
-Lần start đầu dựng venv Python, giải quyết llama.cpp runtime cố định (dựng
-sẵn hoặc build nguồn) và chuẩn bị trạng thái chính xác của mô hình; có thể mất
-một vài phút. Các lần start sau tái sử dụng trạng thái ready.
+Lần start đầu tải target, draft DFlash2 và projector từ Hugging Face; đồng thời build runtime CUDA llama.cpp đã pin nếu chưa có cache và thử `CONTEXT_SIZE=131072`. Nếu startup thất bại do tài nguyên, server có thể lần lượt thử Context nhỏ hơn; Context/output thực tế được hiển thị qua status và response headers. Những lần chạy sau chỉ dùng lại file cache sau khi xác minh size/hash.
 
+Để cung cấp dịch vụ cá nhân liên tục, hãy chạy trên Linux GPU host có vòng đời ổn định; Kaggle là môi trường qualification/runtime, không bảo đảm uptime 24/7. Endpoint bên ngoài luôn phải đi qua gateway có xác thực.
 ## Cấu hình
 
-Giá trị mặc định nằm trong `config/default.env` và bị ghi đè bởi biến môi
-trường. Các nút bấm chính:
+Giá trị mặc định ở `config/default.env`; profile trong `config/profiles.json` được `serve.sh` áp dụng trừ khi biến môi trường tương ứng được override rõ ràng.
 
 | Biến | Mặc định | Mục đích |
 | --- | --- | --- |
-| `SERVE_PROFILE` | `dflash2` | `dflash2` bật DFlash2; `baseline` tắt |
-| `SERVER_PORT` / `SERVER_HOST` | `8088` / `127.0.0.1` | Bind backend loopback |
-| `EXPOSURE_PROXY_PORT` | `8090` | Bind auth-gateway loopback |
-| `EXPOSURE_MODE` | `quick` | `quick`, `named`, hoặc `proxy` (BYO tunnel) |
-| `MUSE_API_TOKEN` | — | Bearer secret, ≥ 32 ký tự in được |
-| `GPU_REQUIRED_COUNT` / `GPU_MIN_VRAM_MIB` | `2` / `14000` | Cổng kiểm GPU |
-| `CONTEXT_SIZE` / `MAX_TOKENS` | `4096` / `256` | Cửa sổ sinh token |
-| `REASONING_STRENGTH` / `REASONING_BUDGET` | `low` / `64` | Ngân sách reasoning cho chat |
-| `REQUEST_TIMEOUT` | `3600` | Hạn chót cứng của yêu cầu gateway (giây) |
-| `PROMPT_LIMIT` | `3` | Số message chat tối đa mỗi yêu cầu |
-| `SOURCE_INTEGRITY_MODE` | `strict` | `strict` / `warn` / `off` cho kiểm tra source manifest |
+| `RUN_PROFILE` | `agent` cho serving bền vững | Context/output mục tiêu tối đa và reasoning mức high |
+| `MODEL_SOURCE_MODE` | `hf` | Chỉ tải weights từ Hugging Face |
+| `HF_DOWNLOAD_WORKERS` | `32` | Worker tải file đồng thời |
+| `HF_XET_NUM_CONCURRENT_RANGE_GETS` | `32` | Xet range download đồng thời cho mỗi file |
+| `CONTEXT_SIZE` / `MAX_TOKENS` | `131072` / `131072` | Context mong muốn và trần output API; giá trị thực tế có thể giảm nếu startup gặp lỗi tài nguyên GPU |
+| `REASONING_STRENGTH` | `high` | Reasoning setting của chat template |
+| `PARALLEL_SLOTS` | `1` | Mỗi lần một inference; request khác chờ trong hàng đợi hữu hạn |
+| `ADMISSION_QUEUE_SIZE` / `ADMISSION_QUEUE_WAIT_SECONDS` | `8` / `600` | Số request chờ tối đa / thời gian chờ tối đa |
+| `EXPOSURE_MODE` | `quick` | `quick`, `named`, hoặc `proxy` (tự cung cấp transport) |
+| `MUSE_API_TOKEN` | — | Bearer secret riêng, tối thiểu 32 ký tự in được |
+| `TUNNEL_TOKEN` / `EXPOSURE_PUBLIC_URL` | — | Credential Named Tunnel và hostname HTTPS đã cấu hình |
+| `SOURCE_INTEGRITY_MODE` | `strict` | Thực thi source manifest |
 
-Mặc định sinh token: `TEMPERATURE=1.0`, `TOP_P=0.95`, `TOP_K=64`, `SEED=42`.
-Không thay đổi serving contract chuẩn (bind loopback, layer split,
-`PARALLEL_SLOTS=1`, draft `DFLASH_DRAFT_N_MAX=15`) — `serve.sh` fail-fast nếu
-vi phạm.
-
+Context 131.072 là mục tiêu theo model, **không phải cam kết mọi cấu hình GPU đều load được**. Server thử đầu tiên với KV cache đã quantize, chỉ fallback khi nhận diện được lỗi startup/tài nguyên. Gateway giới hạn yêu cầu output quá lớn theo Context/output thực tế mà runtime đã load. Server không chạy nhiều generation cùng lúc; hàng đợi hữu hạn bảo vệ model đang chiếm VRAM khỏi concurrency không kiểm soát.
 ## Khởi động backend
 
 ```bash
