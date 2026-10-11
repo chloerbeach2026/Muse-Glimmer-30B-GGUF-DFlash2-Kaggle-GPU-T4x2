@@ -402,7 +402,10 @@ PY
     else
       ready_rc=$?
       can_retry=0
-      if ! kill -0 "$server_pid" 2>/dev/null || grep -Eiq 'out of memory|failed to allocate|allocation failed|CUDA error:.*(memory|alloc)|KV cache.*(fail|alloc|memory)|not enough (free )?memory' "$SERVER_LOG"; then
+      # Retry with less Context only when logs identify a resource/allocation failure.
+      # A dead process alone is not enough: invalid flags, broken weights, and
+      # unsupported runtime options must fail immediately rather than be masked.
+      if grep -Eiq 'out of memory|failed to allocate|allocation failed|CUDA error:.*(memory|alloc)|KV cache.*(fail|alloc|memory)|not enough (free )?memory|unable to allocate|alloc(ation)? of .* failed' "$SERVER_LOG"; then
         can_retry=1
       fi
       tail -n 120 "$SERVER_LOG" >&2 || true
