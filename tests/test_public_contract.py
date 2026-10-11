@@ -298,6 +298,12 @@ def main() -> int:
     check("gateway server version", getattr(auth_proxy.AuthProxyHandler, "server_version", None) == "MuseExternalProxy/1.0.0")
 
     cfg = ROOT.joinpath("config/default.env").read_text(encoding="utf-8")
+    readiness_source = ROOT.joinpath("scripts/readiness.py").read_text(encoding="utf-8")
+    check("readiness honors all HF, projector, runtime and context overrides",
+          all(token in readiness_source for token in (
+              "DFLASH_HF_MODEL_REPO", "DFLASH_HF_REVISION", "DFLASH_HF_FILE",
+              "VERIFY_DFLASH_SHA256", "MM_PROJ_REPO", "MM_PROJ_REVISION",
+              "MM_PROJ_SHA256", "LLAMA_CPP_EXPECTED_COMMIT", "CONTEXT_SIZE", "MAX_TOKENS")))
     common_shell = ROOT.joinpath("scripts/common.sh").read_text(encoding="utf-8")
     check("HF download logs/CLI output cannot corrupt resolved DFlash path",
           'HF_DOWNLOAD_START repo=$repo_id file=$filename revision=$revision workers=${HF_DOWNLOAD_WORKERS:-32} xet_range_gets=${HF_XET_NUM_CONCURRENT_RANGE_GETS:-32}" >&2' in common_shell
