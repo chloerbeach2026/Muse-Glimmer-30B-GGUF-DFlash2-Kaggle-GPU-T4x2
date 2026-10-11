@@ -267,7 +267,7 @@ def main() -> int:
             st, _, data = request(pport2b, "POST", "/v1/chat/completions", body=b"not json",
                                   headers={"Authorization": AUTH, "Content-Type": "application/json"})
             check("malformed json -> 400", st == 400 and b"muse_" in data)
-            badt = {"messages": [{"role": "user", "content": "x"}], "max_tokens": 600}
+            badt = {"messages": [{"role": "user", "content": "x"}], "max_tokens": P.MAX_TOKENS + 1}
             st, _, data = request(pport2b, "POST", "/v1/chat/completions", body=json.dumps(badt).encode(),
                                   headers={"Authorization": AUTH, "Content-Type": "application/json"})
             check("max_tokens out of range -> 400 muse_invalid_max_tokens", st == 400 and b"muse_invalid_max_tokens" in data)
