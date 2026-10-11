@@ -252,6 +252,25 @@ def main() -> int:
                   hdrs.get("X-Muse-Effective-Context-Size") == str(P.MAX_TOKENS)
                   and hdrs.get("X-Muse-Max-Output-Tokens") == str(P.MAX_TOKENS))
 
+            tool_history = {
+                "messages": [
+                    {"role": "assistant", "content": None, "tool_calls": [
+                        {"id": "call-read-1", "type": "function",
+                         "function": {"name": "read_file", "arguments": {"path": "README.md"}}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "call-read-1", "content": "file contents"}
+                ],
+                "tools": [{"type": "function", "function": {"name": "read_file",
+                          "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}}],
+            }
+            st_tool, _, _ = request(pport, "POST", "/v1/chat/completions", body=json.dumps(tool_history).encode(),
+                                    headers={"Authorization": AUTH, "Content-Type":"application/json"})
+            forwarded_tool = json.loads(backend_seen[-1]["body"])
+            args = forwarded_tool["messages"][0]["tool_calls"][0]["function"]["arguments"]
+            check("multi-turn tool history is accepted and argument objects normalize to JSON text",
+                  st_tool == 200 and isinstance(args, str) and json.loads(args) == {"path": "README.md"}
+                  and forwarded_tool["messages"][1]["role"] == "tool")
+
             # --- telemetry was written atomically by this first proxy ---
             tx = Path(tfile)
             snap = json.loads(tx.read_text()) if tx.exists() else None
