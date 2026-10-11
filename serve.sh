@@ -109,13 +109,49 @@ assert_persistent_contract() {
     echo "ERROR: persistent server target is frozen to $CANONICAL_TARGET_FILE." >&2
     exit 4
   }
+  [[ "${MODEL_SOURCE_MODE:-hf}" == hf ]] || {
+    echo 'ERROR: persistent serving permits model weights from Hugging Face only (MODEL_SOURCE_MODE=hf).' >&2
+    exit 4
+  }
+  [[ "${MODEL_REPO:-}" == 'bartowski/Muse-Glimmer-30B-GGUF' &&
+     "${MODEL_HF_REVISION:-}" == '16f5840bef28e4018cf41a7ec9709d6fd89176f6' ]] || {
+    echo 'ERROR: target Hugging Face repository/revision differs from the pinned identity.' >&2
+    exit 4
+  }
+  [[ "${VERIFY_MODEL_SHA256:-1}" == 1 ]] || {
+    echo 'ERROR: target SHA-256 verification cannot be disabled for persistent serving.' >&2
+    exit 4
+  }
   [[ "$MODEL_SHA256" == "$CANONICAL_TARGET_SHA" && "$MODEL_SIZE_BYTES" == "$CANONICAL_TARGET_SIZE" ]] || {
     echo 'ERROR: configured target identity differs from the canonical target identity.' >&2
     exit 4
   }
+  [[ "${MM_PROJ_REPO:-}" == 'meta-models/Muse-Glimmer-30B-GGUF' &&
+     "${MM_PROJ_REVISION:-}" == '43c7eadd41352a299ea8e0a36b3157978dd63596' &&
+     "${MM_PROJ_FILE:-}" == 'mmproj-Muse-Glimmer-30B-Q4_K_M.gguf' &&
+     "${MM_PROJ_SIZE_BYTES:-}" == '1400328928' &&
+     "${MM_PROJ_SHA256:-}" == 'f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6' &&
+     "${MM_PROJ_REQUIRED:-1}" == 1 ]] || {
+    echo 'ERROR: vision-projector source/revision/identity differs from the pinned Hugging Face asset.' >&2
+    exit 4
+  }
+  [[ "$CONTEXT_SIZE" =~ ^[0-9]+$ ]] && (( CONTEXT_SIZE >= 4096 && CONTEXT_SIZE <= 131072 )) || {
+    echo "ERROR: CONTEXT_SIZE must be between 4096 and the model maximum 131072 (got '${CONTEXT_SIZE:-unset}')." >&2
+    exit 4
+  }
+  [[ "$MAX_TOKENS" =~ ^[0-9]+$ ]] && (( MAX_TOKENS >= 1 && MAX_TOKENS <= 131072 )) || {
+    echo "ERROR: MAX_TOKENS must be between 1 and 131072 (got '${MAX_TOKENS:-unset}')." >&2
+    exit 4
+  }
   if [[ "$SERVE_PROFILE" == dflash2 ]]; then
-    [[ "$DFLASH_MODEL_FILE" == "$CANONICAL_DRAFT_FILE" && "$DFLASH_MODEL_SHA256" == "$CANONICAL_DRAFT_SHA" && "$DFLASH_MODEL_SIZE_BYTES" == "$CANONICAL_DRAFT_SIZE" ]] || {
-      echo 'ERROR: configured DFlash2 identity differs from the canonical draft identity.' >&2
+    [[ "$DFLASH_HF_MODEL_REPO" == 'meta-models/Muse-Glimmer-30B-GGUF' &&
+       "$DFLASH_HF_REVISION" == '43c7eadd41352a299ea8e0a36b3157978dd63596' &&
+       "$DFLASH_HF_FILE" == 'dflash-Muse-Glimmer-30B-Q4_K_M.gguf' &&
+       "$VERIFY_DFLASH_SHA256" == 1 &&
+       "$DFLASH_MODEL_FILE" == "$CANONICAL_DRAFT_FILE" &&
+       "$DFLASH_MODEL_SHA256" == "$CANONICAL_DRAFT_SHA" &&
+       "$DFLASH_MODEL_SIZE_BYTES" == "$CANONICAL_DRAFT_SIZE" ]] || {
+      echo 'ERROR: configured DFlash2 HF source/revision/identity differs from the canonical draft.' >&2
       exit 4
     }
   fi
