@@ -128,7 +128,9 @@ def print_report(report: dict[str, Any], fmt: str) -> None:
         ("HOST", "host"), ("PORT", "port"), ("OWNED", "owned"),
         ("HEALTHY", "healthy"), ("TARGET", "target_path"),
         ("TARGET_SHA256", "target_sha256"), ("DRAFT", "draft_path"),
-        ("DRAFT_SHA256", "draft_sha256"), ("RUNTIME_SOURCE", "runtime_source"),
+        ("DRAFT_SHA256", "draft_sha256"), ("CONTEXT_SIZE", "context_size"),
+        ("MAX_TOKENS", "max_tokens"), ("MM_PROJ_SHA256", "mmproj_sha256"),
+        ("RUNTIME_SOURCE", "runtime_source"),
         ("RUNTIME_COMMIT", "runtime_commit"), ("CUDA_VISIBLE_DEVICES", "cuda_visible_devices"),
         ("GPU_COUNT", "gpu_count"), ("LOG", "log"), ("STATE_FILE", "state_file"),
     ]
