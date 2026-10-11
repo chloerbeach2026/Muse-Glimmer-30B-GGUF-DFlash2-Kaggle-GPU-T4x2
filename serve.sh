@@ -189,6 +189,16 @@ start_server() {
   # Required multimodal projector comes only from the pinned Hugging Face repository.
   MM_PROJ_PATH="${MM_PROJ_PATH:-$MODELS_DIR/${MM_PROJ_FILE:-mmproj-Muse-Glimmer-30B-Q4_K_M.gguf}}"
   if [[ "${MM_PROJ_REQUIRED:-1}" == 1 ]]; then
+    mmproj_expected_size="${MM_PROJ_SIZE_BYTES:-1400328928}"
+    mmproj_expected_sha="${MM_PROJ_SHA256:-f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6}"
+    if [[ -s "$MM_PROJ_PATH" ]]; then
+      mmproj_size="$(stat -Lc '%s' "$MM_PROJ_PATH")"
+      mmproj_sha="$(sha256sum "$MM_PROJ_PATH" | awk '{print $1}')"
+      if [[ "$mmproj_size" != "$mmproj_expected_size" || "$mmproj_sha" != "$mmproj_expected_sha" ]]; then
+        echo "WARNING: cached HF projector failed identity verification; deleting cache and re-downloading." >&2
+        rm -f "$MM_PROJ_PATH"
+      fi
+    fi
     if [[ ! -s "$MM_PROJ_PATH" ]]; then
       hf_download_asset "${MM_PROJ_REPO:-meta-models/Muse-Glimmer-30B-GGUF}" \
         "${MM_PROJ_FILE:-mmproj-Muse-Glimmer-30B-Q4_K_M.gguf}" \
@@ -197,11 +207,11 @@ start_server() {
     [[ -s "$MM_PROJ_PATH" ]] || { echo "ERROR: required HF vision projector missing: $MM_PROJ_PATH" >&2; exit 4; }
     mmproj_size="$(stat -Lc '%s' "$MM_PROJ_PATH")"
     mmproj_sha="$(sha256sum "$MM_PROJ_PATH" | awk '{print $1}')"
-    [[ "$mmproj_size" == "${MM_PROJ_SIZE_BYTES:-1400328928}" ]] || {
-      echo "ERROR: HF vision projector size mismatch expected=${MM_PROJ_SIZE_BYTES:-1400328928} actual=$mmproj_size" >&2
+    [[ "$mmproj_size" == "$mmproj_expected_size" ]] || {
+      echo "ERROR: HF vision projector size mismatch expected=$mmproj_expected_size actual=$mmproj_size" >&2
       exit 4
     }
-    [[ "$mmproj_sha" == "${MM_PROJ_SHA256:-f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6}" ]] || {
+    [[ "$mmproj_sha" == "$mmproj_expected_sha" ]] || {
       echo "ERROR: HF vision projector SHA-256 mismatch actual=$mmproj_sha" >&2
       exit 4
     }
