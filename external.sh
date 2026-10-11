@@ -10,7 +10,8 @@ TELEMETRY_FILE="${MUSE_DEMO_TELEMETRY_FILE:-$ROOT/artifacts/runtime-state/demo-o
 LOG_FILE="${EXTERNAL_LOG_FILE:-$ROOT/artifacts/runtime-state/external.log}"
 BACKEND_READY_TIMEOUT="${EXTERNAL_BACKEND_READY_TIMEOUT:-900}"
 BACKEND_READY_INTERVAL="${EXTERNAL_BACKEND_READY_INTERVAL:-1}"
-CLOUDFLARED_BIN="${CLOUDFLARED_BIN:-cloudflared}"
+CLOUDFLARED_BIN="${CLOUDFLARED_BIN:-$ROOT/vendor/bin/cloudflared}"
+export CLOUDFLARED_BIN
 
 TARGET_SHA256='0d3fc85f61d10fdc84072f0bba6005d61c1ac5605a2627b0fd5ea4ff8194c384'
 DRAFT_SHA256='93dbfb6f88e4645dec1347cf93f9d6fc80b90d413038722385b2a8e53565c949'
@@ -271,9 +272,11 @@ credential_preflight() {
 
 
 cloudflared_preflight() {
-  # proxy/BYO mode: the operator owns the tunnel transport.
+  # Quick and Named modes use the repo's pinned, verified binary by default.
   [[ "$EXPOSURE_MODE" == proxy ]] && return 0
-  if [[ "$CLOUDFLARED_BIN" == */* ]]; then
+  if [[ "$CLOUDFLARED_BIN" == "$ROOT/vendor/bin/cloudflared" ]]; then
+    bash "$ROOT/scripts/install_cloudflared.sh" "$CLOUDFLARED_BIN" || return 34
+  elif [[ "$CLOUDFLARED_BIN" == */* ]]; then
     [[ -x "$CLOUDFLARED_BIN" ]] || {
       echo "ERROR: cloudflared binary not found/executable: $CLOUDFLARED_BIN" >&2
       return 34
