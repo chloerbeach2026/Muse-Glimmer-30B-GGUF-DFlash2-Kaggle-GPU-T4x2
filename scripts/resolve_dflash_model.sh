@@ -47,9 +47,16 @@ if [[ -n "$explicit" ]]; then
 fi
 
 local_path="$MODELS_DIR/$filename"
-if [[ "${FORCE_MODEL_DOWNLOAD:-0}" != 1 && -s "$local_path" ]]; then
-  validate "$local_path"
-  exit $?
+if [[ "${FORCE_MODEL_DOWNLOAD:-0}" == 1 ]]; then
+  rm -f "$local_path"
+fi
+if [[ -s "$local_path" ]]; then
+  if validate "$local_path" >/dev/null; then
+    validate "$local_path"
+    exit 0
+  fi
+  echo "Existing DFlash2 cache failed exact identity verification; removing and re-downloading from HF." >&2
+  rm -f "$local_path"
 fi
 mkdir -p "$MODELS_DIR" "$RUNTIME_STATE_DIR"
 hf_download_asset "$repo_id" "$hf_filename" "$revision" "$MODELS_DIR"
