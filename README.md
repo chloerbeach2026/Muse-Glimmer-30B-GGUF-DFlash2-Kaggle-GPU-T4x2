@@ -156,25 +156,11 @@ No model files are committed to Git. A local `models/` cache is reused only afte
 
 ## Integrity / hash verification
 
-Every `./serve.sh start` (and therefore every `./external.sh start`) verifies,
-in strict mode:
+Every `./serve.sh start` verifies the source manifest, exact target model identity, exact DFlash2 identity, vision-projector SHA-256, and the pinned llama.cpp source commit. Model assets come only from the immutable Hugging Face revisions in [Model assets](#model-assets-hugging-face-only); Kaggle-mounted model weights are not read.
 
-1. `scripts/source_manifest.py check` — the source tree must match
-   `SOURCE_MANIFEST.sha256` (disable only with `SOURCE_INTEGRITY_MODE=warn|off`).
-2. The exact pinned llama.cpp runtime commit and its verified manifest
-   (`LLAMA_RUNTIME_MANIFEST_VERIFIED=1` for prebuilt runtimes).
-3. Target model size and SHA-256 (`17306324000` /
-   `0d3fc85f61d10fdc84072f0bba6005d61c1ac5605a2627b0fd5ea4ff8194c384`).
-4. DFlash2 draft size and SHA-256 (`1645657280` /
-   `93dbfb6f88e4645dec1347cf93f9d6fc80b90d413038722385b2a8e53565c949`).
+The target, draft and projector must match both their configured byte size and SHA-256. A missing or corrupt cached artifact is removed and downloaded again using native Hugging Face Hub cache/resume, `HF_DOWNLOAD_WORKERS=32`, and `HF_XET_NUM_CONCURRENT_RANGE_GETS=32`. A mismatch stops startup before the model is served. The notebook writes the verified asset identities and the actually loaded Context/output values into runtime evidence.
 
-Manual verification of the attached model files:
-
-```bash
-find /kaggle/input -type f -name 'Muse-Glimmer-30B-Q4_K_M.gguf' -print -exec sha256sum {} \;
-find /kaggle/input -type f -name 'Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf' -print -exec sha256sum {} \;
-```
-
+For reproducible CPU-only checks, run `./demo-smoke.sh`; for a T4x2 hardware qualification, use the notebook below. Neither static configuration nor a successful CPU test is a substitute for a real GPU run.
 ## Canonical production notebook
 
 For a guided production-style Kaggle run, use [`notebooks/kaggle-production.ipynb`](notebooks/kaggle-production.ipynb).
@@ -191,63 +177,46 @@ The successful Kaggle T4 x2 run described in the historical publication record b
 
 See [the publication evidence documentation](docs/PUBLICATION_EVIDENCE.md) for the historical claim boundary and verification process.
 
-## Kaggle T4x2 quick start
+## Start the personal agent server
 
 ```bash
-# 1) Create a Kaggle notebook/session with the "GPU T4 x2" accelerator.
-# 2) Attach the exact Kaggle resources/variations from "Model files".
-# 3) Clone this repository into /kaggle/working.
-
 git clone https://github.com/chloerbeach2026/Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2.git
 cd Muse-Glimmer-30B-GGUF-DFlash2-Kaggle-GPU-T4x2
 
-# 4) Verify the notebook is ready (read-only; no GPU/model required).
+# Set secrets only in the shell/secret manager; never commit them.
+export MUSE_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+
+# Read-only checks, then start the pinned HF-only model/runtime and gateway.
 ./readiness.sh
-
-# 5) Set your gateway secret (>= 32 printable characters).
-export MUSE_API_TOKEN='replace-with-a-secret-of-at-least-32-characters'
-
-# 6) Validate external configuration without starting anything.
 ./external.sh preflight
-
-# 7) Start backend + gateway + public tunnel (default EXPOSURE_MODE=quick).
 ./external.sh start
-
-# 8) Print the public HTTPS endpoint.
 ./external.sh endpoint
-
-# 9) Inspect combined backend/exposure status.
 ./external.sh status
 ```
 
-The first start bootstraps a Python venv, resolves the pinned llama.cpp
-runtime (attached prebuilt or source build), and prepares the exact model
-state; it can take several minutes. Subsequent starts reuse ready state.
+The first start downloads the target, DFlash2 draft and projector from Hugging Face, builds the pinned CUDA llama.cpp runtime if not cached, and attempts `CONTEXT_SIZE=131072`. On startup resource failure, it may fall back through smaller Context values; the effective Context/output limit is shown by status and response headers. Subsequent starts reuse files only after size/hash verification.
 
+For an actual long-running personal service, run on a persistent Linux GPU host; Kaggle is a qualification/runtime session and does not guarantee 24/7 uptime. The external endpoint must remain behind the authenticated gateway.
 ## Configuration
 
-Defaults live in `config/default.env` and are overridden by environment
-variables. Key knobs:
+Defaults live in `config/default.env`; profile values in `config/profiles.json` are applied by `serve.sh` unless a corresponding environment override is explicitly set.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `SERVE_PROFILE` | `dflash2` | `dflash2` enables DFlash2; `baseline` disables it |
-| `SERVER_PORT` / `SERVER_HOST` | `8088` / `127.0.0.1` | Loopback backend bind |
-| `EXPOSURE_PROXY_PORT` | `8090` | Loopback auth-gateway bind |
-| `EXPOSURE_MODE` | `quick` | `quick`, `named`, or `proxy` (BYO tunnel) |
-| `MUSE_API_TOKEN` | — | Bearer secret, ≥ 32 printable characters |
-| `GPU_REQUIRED_COUNT` / `GPU_MIN_VRAM_MIB` | `2` / `14000` | GPU gate |
-| `CONTEXT_SIZE` / `MAX_TOKENS` | `4096` / `256` | Generation window |
-| `REASONING_STRENGTH` / `REASONING_BUDGET` | `low` / `64` | Chat reasoning budget |
-| `REQUEST_TIMEOUT` | `3600` | Gateway request hard deadline (seconds) |
-| `PROMPT_LIMIT` | `3` | Max chat messages per request |
-| `SOURCE_INTEGRITY_MODE` | `strict` | `strict` / `warn` / `off` for the source manifest check |
+| `RUN_PROFILE` | `agent` for persistent serving | Full Context/output target and high reasoning |
+| `MODEL_SOURCE_MODE` | `hf` | Model weights are HF-only |
+| `HF_DOWNLOAD_WORKERS` | `32` | Parallel file downloads |
+| `HF_XET_NUM_CONCURRENT_RANGE_GETS` | `32` | Concurrent Xet range downloads per file |
+| `CONTEXT_SIZE` / `MAX_TOKENS` | `131072` / `131072` | Desired Context and API output ceiling; actual values may be reduced after a GPU resource startup failure |
+| `REASONING_STRENGTH` | `high` | Model chat-template reasoning setting |
+| `PARALLEL_SLOTS` | `1` | One inference at a time; other requests wait in a bounded queue |
+| `ADMISSION_QUEUE_SIZE` / `ADMISSION_QUEUE_WAIT_SECONDS` | `8` / `600` | Maximum queued requests / maximum wait |
+| `EXPOSURE_MODE` | `quick` | `quick`, `named`, or `proxy` (bring your own transport) |
+| `MUSE_API_TOKEN` | — | Private Bearer secret, at least 32 printable characters |
+| `TUNNEL_TOKEN` / `EXPOSURE_PUBLIC_URL` | — | Named Tunnel credential and preconfigured HTTPS hostname |
+| `SOURCE_INTEGRITY_MODE` | `strict` | Enforces the source manifest |
 
-Generation defaults: `TEMPERATURE=1.0`, `TOP_P=0.95`, `TOP_K=64`, `SEED=42`.
-Do not change the canonical serving contract (loopback bind, layer split,
-`PARALLEL_SLOTS=1`, draft `DFLASH_DRAFT_N_MAX=15`) — `serve.sh` fails fast if
-it is violated.
-
+The requested 131,072 Context is the model target, **not a guarantee that every GPU configuration can load it**. The server attempts it first with quantized KV cache and then only falls back on recognized startup/resource failure. The gateway clamps oversized client output limits to the Context/output budget that the runtime actually loaded. It does not offer multiple simultaneous generations: the bounded queue protects one GPU-resident model from uncontrolled concurrency.
 ## Backend startup
 
 ```bash
