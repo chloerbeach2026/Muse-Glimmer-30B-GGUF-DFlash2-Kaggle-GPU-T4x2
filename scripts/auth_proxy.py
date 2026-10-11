@@ -193,6 +193,7 @@ class ProxyServer(http.server.ThreadingHTTPServer):
         timeout: float, max_request_bytes: int, idle_timeout: float, hard_deadline: float,
         telemetry_file: str | None = None, queue_size: int = P.MAX_QUEUED_INFERENCE,
         queue_wait_seconds: float = P.QUEUE_WAIT_SECONDS,
+        effective_context_size: int = P.MAX_TOKENS, max_output_tokens: int | None = None,
     ):
         super().__init__(address, handler_cls)
         self.auth_token = token
@@ -204,6 +205,9 @@ class ProxyServer(http.server.ThreadingHTTPServer):
         self.hard_deadline = hard_deadline
         self.queue_size = max(0, int(queue_size))
         self.queue_wait_seconds = max(0.0, float(queue_wait_seconds))
+        self.effective_context_size = max(1, int(effective_context_size))
+        requested_output_cap = self.effective_context_size if max_output_tokens is None else int(max_output_tokens)
+        self.max_output_tokens = max(1, min(P.MAX_TOKENS, self.effective_context_size, requested_output_cap))
         self.admission = P.AdmissionSlot(max_queued=self.queue_size, wait_seconds=self.queue_wait_seconds)
         self.rate_bucket = P.TokenBucket(capacity=P.RATE_CAPACITY, refill_per_sec=P.RATE_REFILL_PER_SEC)
         self.telemetry = DemoTelemetry(telemetry_file=telemetry_file)
@@ -393,17 +397,24 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
 
             # Normalize modern OpenAI SDK naming to llama.cpp's chat-completions shape.
             modern_limit = payload.pop("max_completion_tokens", None)
-            if modern_limit is not None:
-                existing_limit = payload.get("max_tokens")
-                if existing_limit is not None and existing_limit != modern_limit:
-                    if admitted_here:
-                        self.server.admission.release()
-                    self.server.telemetry.note_validation_error(request_id, 400)
-                    self._reject_json(400, P.build_error_body(
-                        "'max_tokens' and 'max_completion_tokens' must match when both are supplied.",
-                        "invalid_request_error", P.ERROR_INVALID_MAX_TOKENS, request_id=request_id))
-                    return
-                payload["max_tokens"] = modern_limit
+            legacy_limit = payload.get("max_tokens")
+            if modern_limit is not None and legacy_limit is not None and legacy_limit != modern_limit:
+                if admitted_here:
+                    self.server.admission.release()
+                self.server.telemetry.note_validation_error(request_id, 400)
+                self._reject_json(400, P.build_error_body(
+                    "'max_tokens' and 'max_completion_tokens' must match when both are supplied.",
+                    "invalid_request_error", P.ERROR_INVALID_MAX_TOKENS, request_id=request_id))
+                return
+
+            requested_limit = modern_limit if modern_limit is not None else legacy_limit
+            # Clients often carry a static 128K limit, but adaptive GPU startup may have
+            # selected a smaller actual context. Clamp rather than fail a valid agent request.
+            if requested_limit is None:
+                effective_limit = self.server.max_output_tokens
+            else:
+                effective_limit = min(int(requested_limit), self.server.max_output_tokens)
+            payload["max_tokens"] = effective_limit
 
             # Apply the model's documented reasoning default consistently to all clients.
             chat_kwargs = payload.get("chat_template_kwargs")
@@ -488,6 +499,8 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(response.status, response.reason)
             has_length = False
             has_cache_control = False
+            has_context_header = False
+            has_output_header = False
             for key, value in response.getheaders():
                 lower = key.lower()
                 if lower in HOP_BY_HOP or lower.startswith(CORS_RESPONSE_PREFIX):
@@ -496,9 +509,17 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
                     has_length = True
                 if lower == "cache-control":
                     has_cache_control = True
+                if lower == "x-muse-effective-context-size":
+                    has_context_header = True
+                if lower == "x-muse-max-output-tokens":
+                    has_output_header = True
                 self.send_header(key, value)
             if not has_cache_control:
                 self.send_header("Cache-Control", "no-store")
+            if not has_context_header:
+                self.send_header("X-Muse-Effective-Context-Size", str(self.server.effective_context_size))
+            if not has_output_header:
+                self.send_header("X-Muse-Max-Output-Tokens", str(self.server.max_output_tokens))
             if not has_length:
                 self.send_header("Connection", "close")
                 self.close_connection = True
@@ -598,6 +619,8 @@ def main() -> int:
     ap.add_argument("--max-request-bytes", type=int, default=P.MAX_BODY_BYTES)
     ap.add_argument("--queue-size", type=int, default=P.MAX_QUEUED_INFERENCE)
     ap.add_argument("--queue-wait-seconds", type=float, default=P.QUEUE_WAIT_SECONDS)
+    ap.add_argument("--effective-context-size", type=int, default=P.MAX_TOKENS)
+    ap.add_argument("--max-output-tokens", type=int, default=None)
     ap.add_argument("--idle-timeout", type=float, default=P.IDLE_TIMEOUT)
     ap.add_argument("--hard-deadline", type=float, default=P.HARD_DEADLINE)
     ap.add_argument("--telemetry-file", default=None)
@@ -622,6 +645,9 @@ def main() -> int:
     if args.queue_size < 0 or args.queue_wait_seconds < 0:
         print("ERROR: queue size and wait time must be non-negative", file=sys.stderr)
         return 25
+    if args.effective_context_size < 1 or (args.max_output_tokens is not None and args.max_output_tokens < 1):
+        print("ERROR: effective context/output limits must be positive", file=sys.stderr)
+        return 26
 
     server = ProxyServer(
         (args.listen_host, args.listen_port), AuthProxyHandler,
@@ -630,8 +656,15 @@ def main() -> int:
         idle_timeout=max(0.1, args.idle_timeout), hard_deadline=max(0.1, args.hard_deadline),
         telemetry_file=args.telemetry_file, queue_size=args.queue_size,
         queue_wait_seconds=args.queue_wait_seconds,
+        effective_context_size=args.effective_context_size,
+        max_output_tokens=args.max_output_tokens,
     )
-    print(f"Muse auth proxy READY http://{args.listen_host}:{args.listen_port} -> http://{args.backend_host}:{args.backend_port}", flush=True)
+    print(
+        f"Muse auth proxy READY http://{args.listen_host}:{args.listen_port} -> "
+        f"http://{args.backend_host}:{args.backend_port} "
+        f"context={server.effective_context_size} max_output={server.max_output_tokens}",
+        flush=True,
+    )
     try:
         server.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
