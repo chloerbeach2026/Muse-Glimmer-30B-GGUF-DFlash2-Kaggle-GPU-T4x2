@@ -115,13 +115,17 @@ class DemoTelemetry:
         with self._lock:
             return json.dumps(self.snapshot, sort_keys=True) + "\n"
 
-    def note_request(self, request_id: str, status: int) -> None:
+    def note_request(self, request_id: str, status: int, *, method: str = None, path: str = None) -> None:
         with self._lock:
             s = self.snapshot
             s["requests_total"] += 1
             s["last_request_id"] = request_id
             s["last_http_status"] = status
             s["last_finish_class"] = "rejected"
+            if method is not None:
+                s["last_request_method"] = method
+            if path is not None:
+                s["last_request_path"] = path
             self._flush_locked()
 
     def note_admitted(self, request_id: str) -> None:
@@ -133,7 +137,7 @@ class DemoTelemetry:
             s["active_inference"] = True
             self._flush_locked()
 
-    def note_validation_error(self, request_id: str, status: int = 400) -> None:
+    def note_validation_error(self, request_id: str, status: int = 400, *, error_code: str | None = None, method: str | None = None, path: str | None = None) -> None:
         """Record rejected client payloads separately from backend failures."""
         with self._lock:
             s = self.snapshot
@@ -142,9 +146,16 @@ class DemoTelemetry:
             s["last_request_id"] = request_id
             s["last_http_status"] = status
             s["last_finish_class"] = "validation_error"
+            s["last_error_category"] = "validation"
+            if error_code is not None:
+                s["last_error_code"] = error_code
+            if method is not None:
+                s["last_request_method"] = method
+            if path is not None:
+                s["last_request_path"] = path
             self._flush_locked()
 
-    def note_completed(self, status: int, duration_ms: float, ttft_ms: float, finish: str) -> None:
+    def note_completed(self, status: int, duration_ms: float, ttft_ms: float, finish: str, *, request_id: str | None = None, error_code: str | None = None) -> None:
         with self._lock:
             s = self.snapshot
             s["active_inference"] = False
@@ -152,6 +163,14 @@ class DemoTelemetry:
             s["last_request_duration_ms"] = round(duration_ms, 1) if duration_ms is not None else None
             s["last_ttft_ms"] = round(ttft_ms, 1) if ttft_ms is not None else None
             s["last_finish_class"] = finish
+            if request_id is not None:
+                s["last_request_id"] = request_id
+            # Clear stale error fields on a clean completion
+            if finish == "done" and status < 400:
+                s["last_error_code"] = None
+                s["last_error_category"] = None
+            elif error_code is not None:
+                s["last_error_code"] = error_code
             self._flush_locked()
 
     def note_busy(self, request_id: str) -> None:
@@ -162,6 +181,8 @@ class DemoTelemetry:
             s["last_request_id"] = request_id
             s["last_http_status"] = 429
             s["last_finish_class"] = "busy"
+            s["last_error_code"] = P.ERROR_BUSY
+            s["last_error_category"] = "admission"
             self._flush_locked()
 
     def note_rate_limited(self, request_id: str) -> None:
@@ -172,6 +193,8 @@ class DemoTelemetry:
             s["last_request_id"] = request_id
             s["last_http_status"] = 429
             s["last_finish_class"] = "rate_limited"
+            s["last_error_code"] = P.ERROR_RATE_LIMITED
+            s["last_error_category"] = "rate_limit"
             self._flush_locked()
 
     def note_timeout(self, request_id: str) -> None:
@@ -180,11 +203,27 @@ class DemoTelemetry:
             s["timeout_total"] += 1
             s["last_request_id"] = request_id
             s["last_finish_class"] = "timeout"
+            s["last_error_code"] = P.ERROR_REQUEST_TIMEOUT
+            s["last_error_category"] = "timeout"
             self._flush_locked()
 
-    def note_backend_error(self) -> None:
+    def note_backend_error(self, *, phase: str = "unknown") -> None:
+        """Record backend failures with phase discrimination.
+
+        phase='connect' means the backend could not be reached (DNS, TCP, TLS).
+        phase='response' means the backend was reached but returned a malformed
+        response or the connection dropped mid-stream.
+        phase='unknown' preserves backward compatibility.
+        """
         with self._lock:
-            self.snapshot["backend_error_total"] += 1
+            s = self.snapshot
+            s["backend_error_total"] += 1
+            s["last_error_code"] = P.ERROR_BACKEND_UNAVAILABLE
+            s["last_error_category"] = "backend"
+            if phase == "connect":
+                s["backend_connect_error_total"] += 1
+            elif phase == "response":
+                s["backend_response_error_total"] += 1
             self._flush_locked()
 
 
@@ -265,16 +304,16 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
                 )
                 response = conn.getresponse()
             except (OSError, http.client.HTTPException, socket.timeout):
-                self.server.telemetry.note_backend_error()
-                self.server.telemetry.note_completed(503, (time.monotonic() - started) * 1000, None, "backend_unavailable")
+                self.server.telemetry.note_backend_error(phase="connect")
+                self.server.telemetry.note_completed(503, (time.monotonic() - started) * 1000, None, "backend_unavailable", request_id=request_id, error_code=P.ERROR_BACKEND_UNAVAILABLE)
                 self._reject_json(503, P.build_error_body(
                     "Backend unavailable.", "server_error", P.ERROR_BACKEND_UNAVAILABLE,
                     request_id=request_id))
                 return
 
             if not (200 <= response.status < 300):
-                self.server.telemetry.note_backend_error()
-                self.server.telemetry.note_completed(503, (time.monotonic() - started) * 1000, None, "backend_unavailable")
+                self.server.telemetry.note_backend_error(phase="response")
+                self.server.telemetry.note_completed(503, (time.monotonic() - started) * 1000, None, "backend_unavailable", request_id=request_id, error_code=P.ERROR_BACKEND_UNAVAILABLE)
                 self._reject_json(503, P.build_error_body(
                     "Backend unavailable.", "server_error", P.ERROR_BACKEND_UNAVAILABLE,
                     request_id=request_id))
@@ -289,7 +328,7 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
             self.close_connection = True
-            self.server.telemetry.note_completed(200, (time.monotonic() - started) * 1000, None, "done")
+            self.server.telemetry.note_completed(200, (time.monotonic() - started) * 1000, None, "done", request_id=request_id)
         finally:
             conn.close()
 
@@ -344,7 +383,7 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(payload)
         self.close_connection = True
-        self.server.telemetry.note_completed(200, (time.monotonic() - started) * 1000, None, "done")
+        self.server.telemetry.note_completed(200, (time.monotonic() - started) * 1000, None, "done", request_id=request_id)
 
     def _proxy(self) -> None:
         if not self._authorized():
@@ -433,7 +472,7 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
 
         # For non-inference public routes, allocate a request id and record telemetry.
         if not admitted_here:
-            self.server.telemetry.note_request(request_id, self.command == "HEAD" and 200 or None)
+            self.server.telemetry.note_request(request_id, self.command == "HEAD" and 200 or None, method=self.command, path=target.path)
 
         if self.command == "GET" and target.path == READY_PUBLIC_PATH:
             self._serve_ready(request_id, started, admitted_here)
@@ -452,7 +491,7 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             except (ValueError, UnicodeDecodeError):
                 if admitted_here:
                     self.server.admission.release()
-                self.server.telemetry.note_validation_error(request_id, 400)
+                self.server.telemetry.note_validation_error(request_id, 400, error_code=P.ERROR_INVALID_PAYLOAD, method=self.command, path=target.path)
                 self._reject_json(400, P.build_error_body(
                     "Request body must be valid JSON.", "invalid_request_error",
                     P.ERROR_INVALID_PAYLOAD, request_id=request_id))
@@ -461,7 +500,8 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             if not ok:
                 if admitted_here:
                     self.server.admission.release()
-                self.server.telemetry.note_validation_error(request_id, 400)
+                error_code = err.get("error", {}).get("code", P.ERROR_INVALID_PAYLOAD)
+                self.server.telemetry.note_validation_error(request_id, 400, error_code=error_code, method=self.command, path=target.path)
                 err["request_id"] = request_id
                 self._reject_json(400, err)
                 return
@@ -472,7 +512,7 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             if modern_limit is not None and legacy_limit is not None and legacy_limit != modern_limit:
                 if admitted_here:
                     self.server.admission.release()
-                self.server.telemetry.note_validation_error(request_id, 400)
+                self.server.telemetry.note_validation_error(request_id, 400, error_code=P.ERROR_INVALID_MAX_TOKENS, method=self.command, path=target.path)
                 self._reject_json(400, P.build_error_body(
                     "'max_tokens' and 'max_completion_tokens' must match when both are supplied.",
                     "invalid_request_error", P.ERROR_INVALID_MAX_TOKENS, request_id=request_id))
@@ -494,7 +534,7 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             if not isinstance(chat_kwargs, dict):
                 if admitted_here:
                     self.server.admission.release()
-                self.server.telemetry.note_validation_error(request_id, 400)
+                self.server.telemetry.note_validation_error(request_id, 400, error_code=P.ERROR_INVALID_PAYLOAD, method=self.command, path=target.path)
                 self._reject_json(400, P.build_error_body(
                     "'chat_template_kwargs' must be an object.",
                     "invalid_request_error", P.ERROR_INVALID_PAYLOAD, request_id=request_id))
@@ -503,7 +543,7 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             if reasoning not in {"low", "medium", "high"}:
                 if admitted_here:
                     self.server.admission.release()
-                self.server.telemetry.note_validation_error(request_id, 400)
+                self.server.telemetry.note_validation_error(request_id, 400, error_code=P.ERROR_INVALID_PAYLOAD, method=self.command, path=target.path)
                 self._reject_json(400, P.build_error_body(
                     "'reasoning_strength' must be low, medium, or high.",
                     "invalid_request_error", P.ERROR_INVALID_PAYLOAD, request_id=request_id))
@@ -550,7 +590,7 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
                 if admitted_here:
                     self.server.admission.release()
                 self.server.telemetry.note_timeout(request_id)
-                self.server.telemetry.note_completed(504, (time.monotonic() - started) * 1000, ttft_ms, "timeout")
+                self.server.telemetry.note_completed(504, (time.monotonic() - started) * 1000, ttft_ms, "timeout", request_id=request_id, error_code=P.ERROR_REQUEST_TIMEOUT)
                 self._reject_json(504, P.build_error_body(
                     "Backend request timed out.", "server_error", P.ERROR_REQUEST_TIMEOUT,
                     request_id=request_id))
@@ -558,8 +598,8 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             except (OSError, http.client.HTTPException) as exc:
                 if admitted_here:
                     self.server.admission.release()
-                self.server.telemetry.note_backend_error()
-                self.server.telemetry.note_completed(502, (time.monotonic() - started) * 1000, ttft_ms, "backend_unavailable")
+                self.server.telemetry.note_backend_error(phase="connect")
+                self.server.telemetry.note_completed(502, (time.monotonic() - started) * 1000, ttft_ms, "backend_unavailable", request_id=request_id, error_code=P.ERROR_BACKEND_UNAVAILABLE)
                 self._reject_json(502, P.build_error_body(
                     "Backend unavailable.", "server_error", P.ERROR_BACKEND_UNAVAILABLE,
                     request_id=request_id))
@@ -571,7 +611,7 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
                 if admitted_here:
                     self.server.admission.release()
                 self.server.telemetry.note_timeout(request_id)
-                self.server.telemetry.note_completed(504, (time.monotonic() - started) * 1000, ttft_ms, "timeout")
+                self.server.telemetry.note_completed(504, (time.monotonic() - started) * 1000, ttft_ms, "timeout", request_id=request_id, error_code=P.ERROR_REQUEST_TIMEOUT)
                 self._reject_json(504, P.build_error_body(
                     "Backend request timed out.", "server_error", P.ERROR_REQUEST_TIMEOUT,
                     request_id=request_id))
@@ -579,8 +619,8 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             except (OSError, http.client.HTTPException) as exc:
                 if admitted_here:
                     self.server.admission.release()
-                self.server.telemetry.note_backend_error()
-                self.server.telemetry.note_completed(502, (time.monotonic() - started) * 1000, ttft_ms, "backend_unavailable")
+                self.server.telemetry.note_backend_error(phase="response")
+                self.server.telemetry.note_completed(502, (time.monotonic() - started) * 1000, ttft_ms, "backend_unavailable", request_id=request_id, error_code=P.ERROR_BACKEND_UNAVAILABLE)
                 self._reject_json(502, P.build_error_body(
                     "Backend unavailable.", "server_error", P.ERROR_BACKEND_UNAVAILABLE,
                     request_id=request_id))
@@ -616,11 +656,11 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
             if self.command == "HEAD":
                 if admitted_here:
                     self.server.admission.release()
-                self.server.telemetry.note_completed(response.status, (time.monotonic() - started) * 1000, ttft_ms, "done")
+                self.server.telemetry.note_completed(response.status, (time.monotonic() - started) * 1000, ttft_ms, "done", request_id=request_id)
                 return
             finish_class = "backend_error" if response.status >= 500 else "done"
             if response.status >= 500:
-                self.server.telemetry.note_backend_error()
+                self.server.telemetry.note_backend_error(phase="response")
             try:
                 while True:
                     remaining = deadline - time.monotonic()
@@ -657,19 +697,19 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
                 self.close_connection = True
                 return
             except (OSError, http.client.HTTPException):
-                self.server.telemetry.note_backend_error()
+                self.server.telemetry.note_backend_error(phase="response")
                 finish_class = "backend_error"
                 self.close_connection = True
                 return
             finally:
                 if admitted_here:
                     self.server.admission.release()
-                self.server.telemetry.note_completed(response.status, (time.monotonic() - started) * 1000, ttft_ms, finish_class)
+                self.server.telemetry.note_completed(response.status, (time.monotonic() - started) * 1000, ttft_ms, finish_class, request_id=request_id)
         except (OSError, http.client.HTTPException) as exc:
             if admitted_here:
                 self.server.admission.release()
-            self.server.telemetry.note_backend_error()
-            self.server.telemetry.note_completed(502, (time.monotonic() - started) * 1000, ttft_ms, "backend_error")
+            self.server.telemetry.note_backend_error(phase="unknown")
+            self.server.telemetry.note_completed(502, (time.monotonic() - started) * 1000, ttft_ms, "backend_error", request_id=request_id, error_code=P.ERROR_BACKEND_UNAVAILABLE)
             if not self.wfile.closed:
                 try:
                     payload = json.dumps({

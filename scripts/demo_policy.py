@@ -341,6 +341,10 @@ def new_telemetry_snapshot() -> dict[str, Any]:
         "last_request_duration_ms": None,
         "last_ttft_ms": None,
         "last_finish_class": None,
+        "last_request_method": None,
+        "last_request_path": None,
+        "last_error_code": None,
+        "last_error_category": None,
         "requests_total": 0,
         "inference_admitted_total": 0,
         "validation_error_total": 0,
@@ -348,4 +352,6 @@ def new_telemetry_snapshot() -> dict[str, Any]:
         "rate_limited_total": 0,
         "timeout_total": 0,
         "backend_error_total": 0,
+        "backend_connect_error_total": 0,
+        "backend_response_error_total": 0,
     }
