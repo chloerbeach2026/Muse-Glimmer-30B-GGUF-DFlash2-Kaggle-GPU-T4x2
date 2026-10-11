@@ -281,6 +281,17 @@ def main() -> int:
               {"role":"tool","tool_call_id":"call_1","content":"ok"},
               {"role":"developer","content":"Be careful"}
           ]})[0])
+    check("gateway accepts multimodal user content parts",
+          P.validate_payload({"messages":[{"role":"user","content":[
+              {"type":"text","text":"Describe this image."},
+              {"type":"image_url","image_url":{"url":"https://example.invalid/image.png"}}
+          ]}]})[0])
+    check("gateway accepts modern completion token field",
+          P.validate_payload({"messages":[{"role":"user","content":"hello"}],
+                              "max_completion_tokens":2048})[0])
+    check("gateway contains context-aware clamping and response hints",
+          "effective_context_size" in auth_proxy.ProxyServer.__init__.__annotations__
+          and "X-Muse-Effective-Context-Size" in auth_proxy.AuthProxyHandler._proxy.__code__.co_consts)
     check("gateway /ready public route allowed", P.ROUTE_ALLOW is None)
 
     import auth_proxy  # noqa: E402
