@@ -391,6 +391,45 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
                 self._reject_json(400, err)
                 return
 
+            # Normalize modern OpenAI SDK naming to llama.cpp's chat-completions shape.
+            modern_limit = payload.pop("max_completion_tokens", None)
+            if modern_limit is not None:
+                existing_limit = payload.get("max_tokens")
+                if existing_limit is not None and existing_limit != modern_limit:
+                    if admitted_here:
+                        self.server.admission.release()
+                    self.server.telemetry.note_validation_error(request_id, 400)
+                    self._reject_json(400, P.build_error_body(
+                        "'max_tokens' and 'max_completion_tokens' must match when both are supplied.",
+                        "invalid_request_error", P.ERROR_INVALID_MAX_TOKENS, request_id=request_id))
+                    return
+                payload["max_tokens"] = modern_limit
+
+            # Apply the model's documented reasoning default consistently to all clients.
+            chat_kwargs = payload.get("chat_template_kwargs")
+            if chat_kwargs is None:
+                chat_kwargs = {}
+            if not isinstance(chat_kwargs, dict):
+                if admitted_here:
+                    self.server.admission.release()
+                self.server.telemetry.note_validation_error(request_id, 400)
+                self._reject_json(400, P.build_error_body(
+                    "'chat_template_kwargs' must be an object.",
+                    "invalid_request_error", P.ERROR_INVALID_PAYLOAD, request_id=request_id))
+                return
+            reasoning = chat_kwargs.get("reasoning_strength", P.DEFAULT_REASONING_STRENGTH)
+            if reasoning not in {"low", "medium", "high"}:
+                if admitted_here:
+                    self.server.admission.release()
+                self.server.telemetry.note_validation_error(request_id, 400)
+                self._reject_json(400, P.build_error_body(
+                    "'reasoning_strength' must be low, medium, or high.",
+                    "invalid_request_error", P.ERROR_INVALID_PAYLOAD, request_id=request_id))
+                return
+            chat_kwargs["reasoning_strength"] = reasoning
+            payload["chat_template_kwargs"] = chat_kwargs
+            body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
         backend_host = self.server.backend_host
         backend_port = self.server.backend_port
         timeout = self.server.backend_timeout
@@ -398,11 +437,14 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
         deadline = started + self.server.hard_deadline
         try:
             try:
+                forward_headers = safe_request_headers(self.headers.items(), backend_host, backend_port)
+                if body is not None:
+                    forward_headers["Content-Length"] = str(len(body))
                 conn.request(
                     self.command,
                     request_target,
                     body=body,
-                    headers=safe_request_headers(self.headers.items(), backend_host, backend_port),
+                    headers=forward_headers,
                 )
             except socket.timeout:
                 if admitted_here:
