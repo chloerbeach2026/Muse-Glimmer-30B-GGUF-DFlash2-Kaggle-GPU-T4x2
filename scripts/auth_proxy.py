@@ -439,6 +439,21 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
                 return
             chat_kwargs["reasoning_strength"] = reasoning
             payload["chat_template_kwargs"] = chat_kwargs
+
+            # Normalize permissive client SDKs that serialize tool arguments as objects.
+            # Chat Completions wire format expects function.arguments to be a JSON string.
+            for message in payload["messages"]:
+                calls = message.get("tool_calls") if isinstance(message, dict) else None
+                if not isinstance(calls, list):
+                    continue
+                for call in calls:
+                    function = call.get("function") if isinstance(call, dict) else None
+                    if not isinstance(function, dict):
+                        continue
+                    arguments = function.get("arguments")
+                    if isinstance(arguments, (dict, list)):
+                        function["arguments"] = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+
             body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
         backend_host = self.server.backend_host
