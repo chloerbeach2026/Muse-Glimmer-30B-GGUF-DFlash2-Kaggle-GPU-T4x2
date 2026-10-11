@@ -7,8 +7,7 @@ DEST="${1:-$ROOT/vendor/bin/cloudflared}"
 URL_BASE="https://github.com/cloudflare/cloudflared/releases/download/$VERSION"
 case "$(uname -m)" in
   x86_64|amd64) ASSET=cloudflared-linux-amd64; EXPECTED_SHA256=d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db ;;
-  aarch64|arm64) ASSET=cloudflared-linux-arm64; EXPECTED_SHA256=e6422b9d4f72d3194bc5a38676f13667c06666523217b842a877d72a80b5ac08 ;;
-  *) echo "ERROR: unsupported cloudflared architecture: $(uname -m)" >&2; exit 2 ;;
+  *) echo "ERROR: pinned cloudflared asset is qualified only for Linux x86_64; got $(uname -m)" >&2; exit 2 ;;
 esac
 verify() {
   local candidate="$1" actual
