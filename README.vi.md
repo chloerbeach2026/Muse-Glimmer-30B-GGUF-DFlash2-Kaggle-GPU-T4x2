@@ -42,7 +42,7 @@
 6. [Yêu cầu](#yêu-cầu)
 7. [Tệp mô hình](#tệp-mô-hình)
 8. [Xác minh toàn vẹn / hash](#xác-minh-toàn-vẹn--hash)
-9. [Khởi động nhanh trên Kaggle T4x2](#khởi-động-nhanh-trên-kaggle-t4x2)
+9. [Khởi động personal agent server](#khởi-động-personal-agent-server)
 10. [Cấu hình](#cấu-hình)
 11. [Khởi động backend](#khởi-động-backend)
 12. [Khởi động gateway](#khởi-động-gateway)
@@ -68,8 +68,7 @@ Một stack serving đầy đủ cho các mô hình GGUF `Muse-Glimmer-30B`:
 
 - **Backend loopback bền vững** — `llama-server` bind tại `127.0.0.1:8088`,
   được khởi động và giám sát bởi `./serve.sh`.
-- **DFlash2 speculative decoding** — một mô hình draft GGUF 1,6 GB đính kèm
-  tăng tốc quá trình sinh token; tắt bằng `SERVE_PROFILE=baseline`.
+- **DFlash2 speculative decoding** — draft GGUF tải từ revision Hugging Face đã pin và kiểm tra SHA-256; tắt bằng `SERVE_PROFILE=baseline`.
 - **Gateway xác thực** — `./expose.sh` chạy `scripts/auth_proxy.py`, một proxy
   Bearer-auth loopback tại `127.0.0.1:8090` thực thi một public contract nghiêm
   ngặt và bảo toàn streaming SSE.
@@ -79,9 +78,7 @@ Một stack serving đầy đủ cho các mô hình GGUF `Muse-Glimmer-30B`:
 ## Phạm vi / Đây là gì
 
 - Một **reference implementation tự-host** và runbook tái lập được.
-- Một **production-style demo** gateway: giới hạn xác định, một admission slot,
-  token-bucket rate limit, request ID không tiết lộ, envelop lỗi `muse_*` có
-  cấu trúc và phản hồi streaming.
+- Một gateway API cho agent: một inference đang chạy, hàng đợi có giới hạn, token-bucket rate limit, request ID không tiết lộ, lỗi `muse_*` có cấu trúc, lịch sử tool-call nhiều lượt và streaming SSE.
 - Tối ưu cho **compute thuộc quyền người dùng**: bạn chạy trong chính phiên
   notebook Kaggle có accelerator "GPU T4 x2" và trả bằng quota của mình.
 - Có thể được cộng đồng review: mọi thứ deterministic và test được trên CPU
@@ -122,7 +119,7 @@ Một stack serving đầy đủ cho các mô hình GGUF `Muse-Glimmer-30B`:
   llama-server (chỉ loopback)     127.0.0.1:8088   backend bền vững
     |
     v
-  GGUF target + DFlash2 draft (Kaggle inputs đính kèm)
+  GGUF target + DFlash2 draft + vision projector (download từ Hugging Face)
 ```
 
 Các entrypoint điều khiển:
@@ -132,40 +129,50 @@ Các entrypoint điều khiển:
   tùy chọn).
 - `./external.sh` — điều phối một lệnh: `preflight`, `start`, `status`,
   `endpoint`, `local-endpoint`, `stop`, `stop-all`, với `--format text|env|json`.
+- `scripts/agent_supervisor.sh` và `scripts/install_systemd_service.sh` — tùy chọn tự phục hồi và chạy khi boot trên Linux host có systemd.
 - `./readiness.sh` — bộ kiểm tra readiness chỉ-đọc cho notebook mới.
 
 ## Yêu cầu
 
-- Linux x86-64, Python 3.12, Bash, Git, CMake/build tools, CUDA toolkit và layout GPU theo `config/default.env` (hiện cần 2 GPU, mỗi GPU ít nhất 14.000 MiB; mục tiêu qualification là Kaggle T4 x2).
-- Internet để tải asset từ Hugging Face và clone/build llama.cpp từ commit đã pin trong lần chạy đầu.
-- `MUSE_API_TOKEN` riêng có ít nhất 32 k## Model assets (chỉ tải từ Hugging Face)
+- Linux x86-64, Python 3.12, Bash, Git, CMake/build tools và CUDA toolchain hoạt động.
+- Hai GPU phù hợp với `config/default.env`; mục tiêu qualification hiện tại là NVIDIA T4 x2, mỗi GPU tối thiểu 14.000 MiB VRAM.
+- Internet để tải lần đầu từ Hugging Face và clone/build llama.cpp tại commit đã pin.
+- `MUSE_API_TOKEN` riêng có tối thiểu 32 ký tự ASCII in được.
+- Với `EXPOSURE_MODE=named`, cần Named Tunnel token cùng hostname HTTPS và DNS route đã cấu hình trong Cloudflare Zero Trust.
+- Không cần attach Kaggle Model weights. Các bài test CPU không cần GPU, model, tunnel hoặc credential.
 
-Server từ chối dùng weights gắn từ Kaggle và tải target, draft DFlash2, vision projector từ revision Hugging Face bất biến. Mỗi asset được xác minh theo dung lượng byte và SHA-256 trước khi serving.
+## Tệp mô hình
 
-| Asset | Repository HF | Revision đã pin | File | Dung lượng mong đợi | SHA-256 |
+Server chỉ tải đúng các asset bên dưới từ revision Hugging Face bất biến và xác minh **dung lượng byte + SHA-256** trước khi phục vụ.
+
+| Asset | Repository Hugging Face | Revision đã pin | File | Dung lượng mong đợi | SHA-256 |
 | --- | --- | --- | --- | ---: | --- |
 | Target | `bartowski/Muse-Glimmer-30B-GGUF` | `16f5840bef28e4018cf41a7ec9709d6fd89176f6` | `Muse-Glimmer-30B-Q4_K_M.gguf` | 17.306.324.000 B | `0d3fc85f61d10fdc84072f0bba6005d61c1ac5605a2627b0fd5ea4ff8194c384` |
-| Draft DFlash2 | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `dflash-Muse-Glimmer-30B-Q4_K_M.gguf` | 1.631.208.128 B | `b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef` |
+| DFlash2 draft | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `dflash-Muse-Glimmer-30B-Q4_K_M.gguf` | 1.631.208.128 B | `b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef` |
 | Vision projector | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `mmproj-Muse-Glimmer-30B-Q4_K_M.gguf` | 1.400.328.928 B | `f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6` |
 
-Politika download: `HF_DOWNLOAD_WORKERS=32`, `HF_XET_NUM_CONCURRENT_RANGE_GETS=32`, Xet high-performance, retry và resume qua Hub cache. Cấu hình nhắm tới 32 Xet range request đồng thời cho mỗi file và tối đa 32 worker tải file; khi tải một file đơn lẻ, không có nghĩa 32 worker file đều hoạt động.
+Tải xuống dùng `HF_DOWNLOAD_WORKERS=32`, `HF_XET_NUM_CONCURRENT_RANGE_GETS=32`, Xet high-performance mode, retry và resume qua cache của Hugging Face Hub. Đây là 32 Xet range request đồng thời cho file lớn và tối đa 32 worker tải file; không có nghĩa 32 worker cùng xử lý một file duy nhất.
 
-Không commit model vào Git. Cache local `models/` chỉ được tái sử dụng sau khi xác minh exact identity. Cache thiếu, ngắn hoặc hỏng sẽ được tải lại từ revision HF đã pin; server không start nếu size hoặc SHA-256 không khớp.
-
-gle có thể thay đổi lớp mount bên ngoài, vì vậy notebook và runtime chủ động tìm đệ quy các input lồng nhau. Backend đọc target model đính kèm **tại chỗ** và resolve draft theo exact filename. Serving vẫn là exact: cả hai model identity đều được kiểm lại theo kích thước và SHA-256 trước mỗi lần start.
+Cache local chỉ được tái sử dụng khi đúng byte size và SHA-256. Asset thiếu, tải dở hoặc hỏng sẽ được tải lại từ revision đã pin; nếu kiểm tra integrity thất bại, server không được phép khởi động.
 
 ## Xác minh toàn vẹn / hash
 
-Mỗi lần `./serve.sh start` xác minh source manifest, exact identity của target model, DFlash2, SHA-256 của vision projector và commit llama.cpp đã pin. Asset model chỉ đến từ revision Hugging Face bất biến trong [Model assets](#model-assets-chỉ-tải-từ-hugging-face); server không đọc model gắn từ Kaggle.
+Mỗi lần `./serve.sh start` xác minh source manifest, exact identity target, DFlash2, projector và commit llama.cpp đã pin. Source manifest kiểm tra bằng:
 
-Target, draft và projector phải khớp cả dung lượng byte lẫn SHA-256 đã cấu hình. Asset cache bị thiếu hoặc hỏng sẽ được xóa và tải lại bằng cơ chế cache/resume của Hugging Face Hub, `HF_DOWNLOAD_WORKERS=32` và `HF_XET_NUM_CONCURRENT_RANGE_GETS=32`. Nếu identity sai, startup dừng trước khi phục vụ model. Notebook ghi lại identity asset đã xác minh cùng Context/output thực tế được load vào runtime.
+```bash
+python3 -B scripts/source_manifest.py check --root .
+sha256sum models/Muse-Glimmer-30B-Q4_K_M.gguf
+sha256sum models/Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf
+sha256sum models/mmproj-Muse-Glimmer-30B-Q4_K_M.gguf
+```
 
-Để chạy kiểm tra deterministic chỉ CPU, dùng `./demo-smoke.sh`; để qualification phần cứng T4x2, dùng notebook bên dưới. Cấu hình tĩnh và test CPU thành công không thay thế cho một lần chạy GPU thật.
+Đường dẫn asset có thể được điều chỉnh qua cấu hình, nhưng repository/revision, tên file, byte size và digest phải khớp các giá trị đã pin. Server không đọc model từ `/kaggle/input` và không commit weights vào Git.
+
 ## Notebook production canonical
 
 Để chạy production-style trên Kaggle theo hướng dẫn đầy đủ, sử dụng [`notebooks/kaggle-production.ipynb`](notebooks/kaggle-production.ipynb).
 
-Notebook xác minh T4 x2 hardware gate, model/runtime inputs đính kèm, commit `main` hiện tại của fork, xử lý Bearer token an toàn, real non-stream và SSE generation, Quick Tunnel transport tùy chọn, evidence và cleanup.
+Notebook qualification T4 x2 xác minh asset tải từ Hugging Face, commit `main` của fork, Bearer token an toàn, non-stream và SSE generation, Context/output thực tế, Quick Tunnel tùy chọn, evidence và cleanup. Không cần attach model weights từ Kaggle.
 
 Xem [`docs/KAGGLE_PRODUCTION.vi.md`](docs/KAGGLE_PRODUCTION.vi.md) để biết operator contract và các release qualification gate.
 
@@ -384,8 +391,9 @@ Streaming được bảo toàn end-to-end: các chunk `text/event-stream` mang
 
 ## Hành vi busy / đồng thời
 
-Demo chỉ nhận **một yêu cầu tại một thời điểm** (`PARALLEL_SLOTS=1`). Khi một
-yêu cầu đang xử lý, bạn nhận:
+Chỉ một generation chạy tại một thời điểm (`PARALLEL_SLOTS=1`). Tối đa 8 request
+được đợi trong hàng đợi tối đa 600 giây; khi hàng đợi đầy hoặc hết thời gian chờ,
+Gateway trả `429` cùng `Retry-After`.
 
 ```text
 HTTP/1.1 429
@@ -455,7 +463,7 @@ hoàn toàn một phiên, tắt mọi thứ và xóa `artifacts/` cùng các th�
 | `readiness.sh` báo blocker `SOURCE_MANIFEST` | Đã sửa tệp runtime → chạy lại `bash scripts/source-manifest.sh write` để tái tạo `SOURCE_MANIFEST.sha256` |
 | `preflight` lỗi credentials | Đặt `MUSE_API_TOKEN` ≥ 32 ký tự in được; với `named`, thêm `TUNNEL_TOKEN`/`EXPOSURE_PUBLIC_URL` |
 | Bootstrap `cloudflared` thất bại | Xem lỗi download/hash; installer đã pin cần HTTPS tới GitHub release chính thức. `CLOUDFLARED_BIN` tùy chỉnh do operator quản lý. |
-| Backend lỗi kiểm định danh tính | Đính kèm đúng các Kaggle inputs trong [Tệp mô hình](#tệp-mô-hình) |
+| Backend lỗi kiểm định danh tính | Xác minh revision HF, byte size và SHA-256 trong [Tệp mô hình](#tệp-mô-hình); xóa cache sai rồi khởi động lại |
 | `429 muse_demo_busy` | Đang có generation chạy; thử lại sau cửa sổ `Retry-After` |
 | Lần start đầu chậm | Bootstrap runtime + chuẩn bị state mô hình là việc làm một lần |
 
@@ -503,7 +511,7 @@ Xem [SECURITY.md](SECURITY.md). Những điểm chính:
   Copyright (c) 2026 Đăng Khoa.
 - **Model weights:** các tệp GGUF là artifact của bên thứ ba với điều khoản
   giấy phép upstream riêng (ví dụ từ repository
-  `bartowski/Muse-Glimmer-30B-GGUF` và input DFlash2 đính kèm). Repository
+  `bartowski/Muse-Glimmer-30B-GGUF` và repository Hugging Face cung cấp draft/projector). Repository
   này **không** tuyên bố model weights là MIT, và giấy phép MIT ở đây không mở
   rộng sang weights.
 
