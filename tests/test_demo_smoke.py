@@ -141,7 +141,7 @@ def start_proxy(bport, timeout, idle, hard, telemetry_file, context_size=P.MAX_T
             "--hard-deadline", str(hard), "--telemetry-file", telemetry_file,
             "--effective-context-size", str(context_size)]
     if output_cap is not None:
-        argv += ["--max-output-tokens", str(output_cap)
+        argv += ["--max-output-tokens", str(output_cap)]
     p = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     deadline = time.time() + 15
     while time.time() < deadline:
