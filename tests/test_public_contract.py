@@ -298,6 +298,11 @@ def main() -> int:
     check("gateway server version", getattr(auth_proxy.AuthProxyHandler, "server_version", None) == "MuseExternalProxy/1.0.0")
 
     cfg = ROOT.joinpath("config/default.env").read_text(encoding="utf-8")
+    common_shell = ROOT.joinpath("scripts/common.sh").read_text(encoding="utf-8")
+    check("HF download logs/CLI output cannot corrupt resolved DFlash path",
+          'HF_DOWNLOAD_START repo=$repo_id file=$filename revision=$revision workers=${HF_DOWNLOAD_WORKERS:-32} xet_range_gets=${HF_XET_NUM_CONCURRENT_RANGE_GETS:-32}" >&2' in common_shell
+          and '--max-workers "${HF_DOWNLOAD_WORKERS:-32}" >&2; then' in common_shell
+          and 'HF_DOWNLOAD_DONE repo=$repo_id file=$filename bytes=$(stat -Lc' in common_shell)
     check("gateway full agent serving uses pinned HF sources and context",
           "MODEL_SOURCE_MODE=hf" in cfg
           and "CONTEXT_SIZE=131072" in cfg
