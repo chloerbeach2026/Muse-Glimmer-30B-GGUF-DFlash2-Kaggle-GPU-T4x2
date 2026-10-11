@@ -12,43 +12,35 @@ It is an operator-focused Kaggle NVIDIA T4 x2 notebook that clones this fork's `
 A complete run validates:
 
 - exactly two NVIDIA T4 GPUs with the required visible VRAM;
-- the exact target GGUF, DFlash2 draft GGUF, and prebuilt llama.cpp runtime inputs;
-- the resolved fork commit SHA, `VERSION=1.0.0`, a clean worktree, and `SOURCE_MANIFEST.sha256`;
-- full SHA-256 verification of both target and DFlash2 GGUF files;
+- fork source identity, a clean worktree, and `SOURCE_MANIFEST.sha256`;
+- Hugging Face-only target GGUF, DFlash2 draft and vision projector from immutable revisions;
+- exact byte sizes and SHA-256 for all three assets before serving;
+- the pinned llama.cpp CUDA runtime built from source if the exact build is not cached;
+- actual Context/output limits loaded by the backend, including any resource-driven Context fallback;
 - successful model-memory residency on both T4 GPUs after backend load;
-- one deterministic semantic sanity request in addition to deployment prompts;
-- observed DFlash2 drafted/accepted counters for all real inference requests;
-- Stop / Reset / Re-run lifecycle controls for repeated tests in the same notebook;
-- secure `MUSE_API_TOKEN` handling, including a temporary-file fallback when a Kaggle Secret is unavailable;
-- the canonical local backend and Bearer-authenticated gateway;
-- one real non-streaming generation with visible assistant content;
-- one real SSE generation with visible streamed content, a terminal finish reason, and `[DONE]`;
+- authenticated gateway handling and OpenAI-compatible agent request payloads;
+- one real non-streaming generation and one real SSE generation ending with `[DONE]`;
 - optional Cloudflare Quick Tunnel transport independently from local model/runtime health;
-- Cloudflare `cloudflared` pinned to release `2026.10.0` and accepted only when the official Linux AMD64 SHA-256 matches before execution;
-- deterministic evidence and cleanup, including deletion of any notebook-generated token.
-
+- pinned `cloudflared 2026.10.0` and its official architecture-specific SHA-256 before execution;
+- deterministic evidence and cleanup, including deletion of a notebook-generated API token.
 ## Runtime boundaries
 
-The notebook is a production-style reference workflow, not a managed hosted service.
+This notebook is a Kaggle T4x2 qualification workflow, not a 24/7 managed service. Model files are downloaded only from pinned Hugging Face revisions, and the notebook rejects assets with a mismatched size or SHA-256.
 
-The local model/runtime qualification is authoritative for the serving core. Quick Tunnel is an optional transport layer and is evaluated separately so external DNS or tunnel instability does not erase a valid local inference result.
+The server requests `CONTEXT_SIZE=131072`, `MAX_TOKENS=131072`, high reasoning strength and DFlash2. If recognized startup/resource failure prevents that Context from loading, smaller Context attempts may be used. The gateway reads successful runtime metadata and clamps client generation limits to the Context/output budget actually loaded. Evidence records the effective values rather than assuming 131K succeeded.
 
-The notebook keeps the public request cap at `max_tokens=512`, uses the model-native request template setting `reasoning_strength=low`, and applies a notebook-owned auth-proxy backend response timeout of 120 seconds without modifying the fetched fork checkout.
+The notebook uses Cloudflare Quick Tunnel to qualify optional public transport. A stable Named Tunnel requires a Cloudflare hostname/DNS route and `TUNNEL_TOKEN`; configure it on a persistent host with `EXPOSURE_MODE=named`. Kaggle may stop when its session ends, so it is not a substitute for a persistent host for always-on personal work.
+## Model sources (Hugging Face only)
 
-## Required Kaggle inputs
+Do **not** attach target, DFlash2 draft, projector or prebuilt runtime as Kaggle inputs. The notebook clones this fork, verifies the source manifest, downloads weights using immutable Hugging Face revisions, 32 Xet range requests per file plus up to 32 file workers, retries/resume and exact SHA-256 checks. The llama.cpp runtime is built from the configured immutable source commit if the exact build is not cached.
 
-Attach the **exact** resources below before running the notebook:
+| Asset | Source | Revision | Local file |
+| --- | --- | --- | --- |
+| Target model | `bartowski/Muse-Glimmer-30B-GGUF` | `16f5840bef28e4018cf41a7ec9709d6fd89176f6` | `Muse-Glimmer-30B-Q4_K_M.gguf` |
+| DFlash2 draft | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `dflash-Muse-Glimmer-30B-Q4_K_M.gguf` (renamed locally to the canonical filename after download) |
+| Vision projector | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `mmproj-Muse-Glimmer-30B-Q4_K_M.gguf` |
 
-| Role | Type | Resource | Required selection | Required identity |
-| --- | --- | --- | --- | --- |
-| Target model | Kaggle Model | [`dangkhoa2016/bartowski-muse-glimmer-30b-gguf`](https://www.kaggle.com/models/dangkhoa2016/bartowski-muse-glimmer-30b-gguf/Gguf/q4-k-m/1) | **GGUF / `q4-k-m` / version `1`** | `Muse-Glimmer-30B-Q4_K_M.gguf` — `0d3fc85f61d10fdc84072f0bba6005d61c1ac5605a2627b0fd5ea4ff8194c384` |
-| DFlash2 draft | Kaggle Model | [`dangkhoa2016/incoai-muse-glimmer-30b-dflash2-gguf`](https://www.kaggle.com/models/dangkhoa2016/incoai-muse-glimmer-30b-dflash2-gguf/Gguf/q4-k-m/1) | **GGUF / `q4-k-m` / version `1`** | `Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf` — `93dbfb6f88e4645dec1347cf93f9d6fc80b90d413038722385b2a8e53565c949` |
-| llama.cpp runtime | Kaggle Dataset | [`dangkhoa2016/muse-glimmer-30b-dflash2-llama-runtime`](https://www.kaggle.com/datasets/dangkhoa2016/muse-glimmer-30b-dflash2-llama-runtime) | attach the dataset | pinned prebuilt CUDA runtime |
-
-Use the dedicated DFlash2 `q4-k-m` variation for the canonical production notebook. It mounts only the required Q4_K_M draft (~1.65 GB). The `default` variation is a legacy all-in-one bundle containing Q4_K_M, Q8_0, and BF16 (about 10 GB total), so it is intentionally excluded from the production-demo input contract.
-
-In Kaggle, choose **Add Input**, open each direct link, and attach the specified Model variation/version or Dataset. Models may appear under `/kaggle/input/models/...` and datasets under `/kaggle/input/datasets/...`; the notebook discovers both recursively.
-
+Expected sizes and digests are maintained in `config/default.env` and verified by the downloader/startup gate. No weights are stored in Git.
 ## Recommended secret
 
 Create a Kaggle Secret:
@@ -66,8 +58,8 @@ The directory uses mode `0700`, the file uses mode `0600`, the token value is ne
 ## Run procedure
 
 1. Select **GPU T4 x2**.
-2. Enable Internet for the repository clone and optional Quick Tunnel.
-3. Use **Add Input** to attach the exact target Model (`q4-k-m/1`), DFlash2 Model (`q4-k-m/1`), and runtime Dataset listed above.
+2. Enable Internet for the repository clone, Hugging Face downloads and optional Quick Tunnel.
+3. Do not attach model/runtime inputs; the notebook downloads HF weights and builds the pinned CUDA runtime when needed.
 4. Optionally configure `MUSE_API_TOKEN`.
 5. Use **Restart Session → Run All**.
 6. Review the final evidence and verdict lines before publishing notebook output.
@@ -76,10 +68,9 @@ A successful release qualification should include:
 
 ```text
 KAGGLE_T4X2_GATE=PASS
-ATTACHED_INPUT_GATE=PASS
 FORK_SOURCE_IDENTITY=PASS
 CANONICAL_ENVIRONMENT=PASS
-MODEL_SHA256_GATE=PASS
+HF_MODEL_INTEGRITY_GATE=PASS
 DUAL_GPU_MEMORY_RESIDENCY=PASS
 LOCAL_AUTH_GATEWAY=PASS
 LOCAL_NONSTREAM_DEMO=PASS
@@ -88,7 +79,9 @@ SEMANTIC_SANITY_GATE=PASS
 DFLASH2_ACTIVITY_GATE=PASS
 VISIBLE_ANSWER_GATE=PASS
 CORE_PRODUCTION_DEMO=PASS
+GATEWAY_RUNTIME_LIMITS_PROCESS_GATE=PASS
 PUBLIC_QUICK_TUNNEL=PASS
+CLOUDFLARED_SHA256_VERIFIED=PASS
 PUBLICATION_SECRET_SCAN=PASS
 PUBLICATION_ARTIFACT_BUNDLE=PASS
 OVERALL_PRODUCTION_DEMO=PASS
