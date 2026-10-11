@@ -197,6 +197,22 @@ export MUSE_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe
 Lần start đầu tải target, draft DFlash2 và projector từ Hugging Face; đồng thời build runtime CUDA llama.cpp đã pin nếu chưa có cache và thử `CONTEXT_SIZE=131072`. Nếu startup thất bại do tài nguyên, server có thể lần lượt thử Context nhỏ hơn; Context/output thực tế được hiển thị qua status và response headers. Những lần chạy sau chỉ dùng lại file cache sau khi xác minh size/hash.
 
 Để cung cấp dịch vụ cá nhân liên tục, hãy chạy trên Linux GPU host có vòng đời ổn định; Kaggle là môi trường qualification/runtime, không bảo đảm uptime 24/7. Endpoint bên ngoài luôn phải đi qua gateway có xác thực.
+### Tùy chọn giám sát systemd (Linux host chạy liên tục)
+
+Để tự chạy sau khi boot và tự phục hồi khi backend/gateway lỗi:
+
+```bash
+sudo bash scripts/install_systemd_service.sh
+sudoedit /etc/muse-agent-server.env
+# Đặt MUSE_API_TOKEN; tùy chọn đặt EXPOSURE_MODE=named, TUNNEL_TOKEN,
+# và EXPOSURE_PUBLIC_URL sau khi cấu hình Named Tunnel/DNS route.
+sudo systemctl enable --now muse-agent-server.service
+systemctl status muse-agent-server.service
+journalctl -u muse-agent-server.service -f
+```
+
+Supervisor systemd tùy chọn kiểm tra provenance của backend, sức khỏe gateway và trạng thái exposure, sau đó restart toàn stack với exponential backoff có giới hạn. Installer không khởi động model và không đọc/in giá trị secret. File môi trường được tạo với quyền `0600`, thuộc root; hãy bảo vệ file này. Service account phải có quyền dùng GPU và ghi các thư mục cache của project. Đây là dịch vụ cá nhân do operator quản lý, không phải cụm high availability.
+
 ## Cấu hình
 
 Giá trị mặc định ở `config/default.env`; profile trong `config/profiles.json` được `serve.sh` áp dụng trừ khi biến môi trường tương ứng được override rõ ràng.
