@@ -7,7 +7,7 @@ source "$PROJECT_ROOT/scripts/nvidia_runtime.sh"
 
 declare -Ag _USER_OVERRIDES=()
 _CONFIG_KEYS=(
-  MODEL_REPO PRIMARY_MODEL_FILE MODEL_FILE MODEL_SIZE_BYTES MODEL_SHA256 ALT_MODEL_FILE ALT_MODEL_SIZE_BYTES ALT_MODEL_SHA256 MODEL_HF_REVISION HF_DOWNLOAD_WORKERS HF_XET_FIXED_DOWNLOAD_CONCURRENCY HF_XET_HIGH_PERFORMANCE HF_ENDPOINT HF_DOWNLOAD_RETRIES HF_RESUME_DOWNLOAD
+  MODEL_REPO PRIMARY_MODEL_FILE MODEL_FILE MODEL_SIZE_BYTES MODEL_SHA256 ALT_MODEL_FILE ALT_MODEL_SIZE_BYTES ALT_MODEL_SHA256 MODEL_HF_REVISION HF_DOWNLOAD_WORKERS HF_XET_NUM_CONCURRENT_RANGE_GETS HF_XET_HIGH_PERFORMANCE HF_ENDPOINT HF_DOWNLOAD_RETRIES HF_RESUME_DOWNLOAD
   DYNAMIC_BASELINE_FILE DYNAMIC_BASELINE_SIZE_BYTES DYNAMIC_BASELINE_SHA256
   MODEL_SELECTION_POLICY MODEL_LOAD_ONLY MODEL_EXPECTED_SIZE_BYTES MODEL_EXPECTED_SHA256
   FORCE_MODEL_DOWNLOAD VERIFY_MODEL_SHA256 RECOVER_HF_INCOMPLETE MM_PROJ_REPO MM_PROJ_REVISION MM_PROJ_FILE MM_PROJ_PATH MM_PROJ_REQUIRED MM_PROJ_SIZE_BYTES MM_PROJ_SHA256
@@ -61,13 +61,25 @@ hf_download_asset() {
   [[ -n "$hf" ]] || { echo 'ERROR: hf CLI is unavailable; run ./serve.sh start to bootstrap dependencies.' >&2; return 2; }
   [[ -n "$repo_id" && -n "$filename" && -n "$revision" ]] || { echo 'ERROR: HF repo, filename, and revision are required.' >&2; return 2; }
   mkdir -p "$local_dir"
-  echo "HF_DOWNLOAD_START repo=$repo_id file=$filename revision=$revision workers=${HF_DOWNLOAD_WORKERS:-32} xet_concurrency=${HF_XET_FIXED_DOWNLOAD_CONCURRENCY:-32}"
-  HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}" \
-  HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}" \
-  HF_XET_FIXED_DOWNLOAD_CONCURRENCY="${HF_XET_FIXED_DOWNLOAD_CONCURRENCY:-32}" \
-    "$hf" download "$repo_id" "$filename" \
-      --revision "$revision" --local-dir "$local_dir" \
-      --max-workers "${HF_DOWNLOAD_WORKERS:-32}"
+  echo "HF_DOWNLOAD_START repo=$repo_id file=$filename revision=$revision workers=${HF_DOWNLOAD_WORKERS:-32} xet_range_gets=${HF_XET_NUM_CONCURRENT_RANGE_GETS:-32}"
+  local attempt max_attempts="${HF_DOWNLOAD_RETRIES:-5}" rc=0
+  for ((attempt=1; attempt<=max_attempts; attempt++)); do
+    if HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}" \
+       HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}" \
+       HF_XET_NUM_CONCURRENT_RANGE_GETS="${HF_XET_NUM_CONCURRENT_RANGE_GETS:-32}" \
+       HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}" \
+       HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-60}" \
+       "$hf" download "$repo_id" "$filename" \
+         --revision "$revision" --local-dir "$local_dir" \
+         --max-workers "${HF_DOWNLOAD_WORKERS:-32}"; then
+      rc=0; break
+    else
+      rc=$?
+      echo "HF_DOWNLOAD_ATTEMPT_FAILED attempt=$attempt/$max_attempts exit=$rc; cache/resume will be reused." >&2
+      (( attempt < max_attempts )) && sleep $(( attempt < 6 ? attempt : 6 ))
+    fi
+  done
+  (( rc == 0 )) || return "$rc"
   [[ -s "$local_dir/$filename" ]] || { echo "ERROR: HF download completed without a non-empty asset: $local_dir/$filename" >&2; return 3; }
   echo "HF_DOWNLOAD_DONE repo=$repo_id file=$filename bytes=$(stat -Lc '%s' "$local_dir/$filename")"
 }
