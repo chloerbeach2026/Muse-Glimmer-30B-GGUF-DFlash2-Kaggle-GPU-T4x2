@@ -369,6 +369,31 @@ start_exposure(){
     fi
   fi
 
+  # Use the actual context that llama-server successfully loaded (including an OOM fallback).
+  local metadata_file="${RUNTIME_STATE_DIR:-$ROOT/artifacts/runtime-state}/server-metadata.json"
+  local -a runtime_limits=()
+  mapfile -t runtime_limits < <(python3 - "$metadata_file" <<'PY'
+import json,sys
+from pathlib import Path
+p=Path(sys.argv[1])
+try:
+    d=json.loads(p.read_text(encoding="utf-8"))
+    context=int(d["context_size"])
+    output=int(d.get("max_tokens",context))
+except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+    print("ERROR: missing/invalid actual server context metadata", file=sys.stderr)
+    raise SystemExit(2)
+if context < 1 or output < 1:
+    raise SystemExit("ERROR: invalid actual server context/output metadata")
+print(context)
+print(min(context, output, 131072))
+PY
+  )
+  [[ "${#runtime_limits[@]}" -eq 2 ]] || { echo "ERROR: could not determine effective server Context/output budget." >&2; return 36; }
+  local effective_context="${runtime_limits[0]}" effective_output="${runtime_limits[1]}"
+  echo "GATEWAY_EFFECTIVE_CONTEXT_SIZE=$effective_context"
+  echo "GATEWAY_EFFECTIVE_MAX_OUTPUT_TOKENS=$effective_output"
+
   : >"$PROXY_LOG"; chmod 600 "$PROXY_LOG" 2>/dev/null || true
   TUNNEL_PID=""
   if [[ "$MODE" != proxy ]]; then : >"$TUNNEL_LOG"; chmod 600 "$TUNNEL_LOG" 2>/dev/null || true; fi
@@ -376,6 +401,7 @@ start_exposure(){
   MUSE_API_TOKEN="$MUSE_API_TOKEN" nohup python3 "$ROOT/scripts/auth_proxy.py" \
     --listen-host "$PROXY_HOST" --listen-port "$PROXY_PORT" \
     --backend-host 127.0.0.1 --backend-port "${backend_url##*:}" \
+    --effective-context-size "$effective_context" --max-output-tokens "$effective_output" \
     --max-request-bytes "${MAX_REQUEST_BYTES:-33554432}" \
     --queue-size "${ADMISSION_QUEUE_SIZE:-8}" \
     --queue-wait-seconds "${ADMISSION_QUEUE_WAIT_SECONDS:-600}" \
