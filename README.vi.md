@@ -37,7 +37,7 @@
 1. [Tổng quan](#tổng-quan)
 2. [Phạm vi / Đây là gì](#phạm-vi--đây-là-gì)
 3. [Đây không phải là gì](#đây-không-phải-là-gì)
-4. [Môi trường đã kiểm thử](#môi-trường-đã-kiểm-thử)
+4. [Môi trường mục tiêu qualification](#môi-trường-mục-tiêu-qualification)
 5. [Kiến trúc](#kiến-trúc)
 6. [Yêu cầu](#yêu-cầu)
 7. [Tệp mô hình](#tệp-mô-hình)
@@ -79,8 +79,7 @@ Một stack serving đầy đủ cho các mô hình GGUF `Muse-Glimmer-30B`:
 
 - Một **reference implementation tự-host** và runbook tái lập được.
 - Một gateway API cho agent: một inference đang chạy, hàng đợi có giới hạn, token-bucket rate limit, request ID không tiết lộ, lỗi `muse_*` có cấu trúc, lịch sử tool-call nhiều lượt và streaming SSE.
-- Tối ưu cho **compute thuộc quyền người dùng**: bạn chạy trong chính phiên
-  notebook Kaggle có accelerator "GPU T4 x2" và trả bằng quota của mình.
+- Thiết kế cho **compute do người dùng sở hữu**: hãy dùng Linux GPU host liên tục để làm việc hàng ngày; Kaggle T4 x2 chỉ là mục tiêu qualification, không phải dịch vụ chạy 24/7.
 - Có thể được cộng đồng review: mọi thứ deterministic và test được trên CPU
   mà không cần GPU (xem [Tái lập](#tái-lập)).
 
@@ -92,12 +91,14 @@ Một stack serving đầy đủ cho các mô hình GGUF `Muse-Glimmer-30B`:
 - Không phải toolkit huấn luyện hay fine-tune mô hình.
 - Không phải bài giới thiệu `llama.cpp` hay GGUF nói chung.
 
-## Môi trường đã kiểm thử
+## Môi trường mục tiêu qualification
+
+> Đây là hợp đồng phần cứng/runtime mục tiêu, không phải bằng chứng rằng commit fork hiện tại đã chạy thành công lại trên Kaggle. Commit hiện tại vẫn cần qualification end-to-end.
 
 | Mục | Giá trị |
 | --- | --- |
-| Nền tảng | Phiên notebook GPU Kaggle |
-| Accelerator | NVIDIA T4 x2 (Kaggle "GPU T4 x2") |
+| Nền tảng | Linux GPU host chạy liên tục để dùng hàng ngày; Kaggle Notebook để qualification |
+| Accelerator qualification | NVIDIA T4 x2 (Kaggle "GPU T4 x2") |
 | Số GPU yêu cầu | 2, mỗi GPU ≥ 14000 MiB VRAM (`GPU_REQUIRED_COUNT=2`, `GPU_MIN_VRAM_MIB=14000`) |
 | CUDA devices | `CUDA_VISIBLE_DEVICES=0,1` |
 | GPU split | layer-split `1,1`, toàn bộ layer trên GPU (`GPU_SPLIT_MODE=layer`, `GPU_TENSOR_SPLIT=1,1`, `GPU_LAYERS=999`) |
@@ -113,8 +114,8 @@ Một stack serving đầy đủ cho các mô hình GGUF `Muse-Glimmer-30B`:
     |  HTTPS (tùy chọn cloudflared quick/named tunnel)
     v
   scripts/auth_proxy.py           127.0.0.1:8090   gateway Bearer auth
-    |                                  |            single admission slot,
-    |                                  |            token-bucket rate limit,
+    |                                  |            một inference đang chạy,
+    |                                  |            hàng đợi có giới hạn,
     v                                  v            bảo toàn SSE
   llama-server (chỉ loopback)     127.0.0.1:8088   backend bền vững
     |
@@ -267,7 +268,7 @@ Gateway (`scripts/auth_proxy.py`) thực thi:
 - Bearer auth bằng `MUSE_API_TOKEN` cho mọi endpoint được bảo vệ;
 - allowlist endpoint (`GET /health`, `GET /ready`, `GET /v1/models`,
   `POST /v1/chat/completions`);
-- một admission slot và token-bucket rate limit;
+- một inference đang chạy cùng hàng đợi hữu hạn (8 request chờ / tối đa 600 giây) và token-bucket rate limit;
 - kiểm tra kích thước body, số message và `max_tokens`;
 - envelop lỗi JSON `muse_*` xác định với request ID không tiết lộ;
 - pass-through streaming SSE với `[DONE]`.
@@ -391,9 +392,7 @@ Streaming được bảo toàn end-to-end: các chunk `text/event-stream` mang
 
 ## Hành vi busy / đồng thời
 
-Chỉ một generation chạy tại một thời điểm (`PARALLEL_SLOTS=1`). Tối đa 8 request
-được đợi trong hàng đợi tối đa 600 giây; khi hàng đợi đầy hoặc hết thời gian chờ,
-Gateway trả `429` cùng `Retry-After`.
+Chỉ một generation chạy tại một thời điểm (`PARALLEL_SLOTS=1`). Tối đa 8 request có thể chờ đến 600 giây. Nếu hàng đợi đầy hoặc hết thời gian chờ, gateway trả:
 
 ```text
 HTTP/1.1 429
@@ -463,7 +462,7 @@ hoàn toàn một phiên, tắt mọi thứ và xóa `artifacts/` cùng các th�
 | `readiness.sh` báo blocker `SOURCE_MANIFEST` | Đã sửa tệp runtime → chạy lại `bash scripts/source-manifest.sh write` để tái tạo `SOURCE_MANIFEST.sha256` |
 | `preflight` lỗi credentials | Đặt `MUSE_API_TOKEN` ≥ 32 ký tự in được; với `named`, thêm `TUNNEL_TOKEN`/`EXPOSURE_PUBLIC_URL` |
 | Bootstrap `cloudflared` thất bại | Xem lỗi download/hash; installer đã pin cần HTTPS tới GitHub release chính thức. `CLOUDFLARED_BIN` tùy chỉnh do operator quản lý. |
-| Backend lỗi kiểm định danh tính | Xác minh revision HF, byte size và SHA-256 trong [Tệp mô hình](#tệp-mô-hình); xóa cache sai rồi khởi động lại |
+| Backend lỗi kiểm định danh tính | Kiểm tra revision HF đã pin, byte size và SHA-256 trong [Tệp mô hình](#tệp-mô-hình); xóa cache hỏng và khởi động lại |
 | `429 muse_demo_busy` | Đang có generation chạy; thử lại sau cửa sổ `Retry-After` |
 | Lần start đầu chậm | Bootstrap runtime + chuẩn bị state mô hình là việc làm một lần |
 
