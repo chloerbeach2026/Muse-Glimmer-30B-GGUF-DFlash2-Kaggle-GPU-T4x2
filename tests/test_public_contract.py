@@ -246,9 +246,10 @@ def main() -> int:
           and "runtime_roots = sorted" not in notebook_code
           and "dangkhoa2016/incoai-muse-glimmer-30b-dflash2-gguf" not in notebook_code
           and 'DRAFT_EXPECTED_SHA256 = "b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef"' in notebook_code)
-    check("cloudflared installer is tracked by the source manifest implementation",
-          "'scripts/install_cloudflared.sh'" not in source_manifest
-          and "ROOT_DIRS={'config','scripts','tests'}" in source_manifest)
+    manifest_implementation = ROOT.joinpath("scripts/source_manifest.py").read_text(encoding="utf-8")
+    check("pinned cloudflared installer is part of the manifest-tracked source tree",
+          ROOT.joinpath("scripts/install_cloudflared.sh").is_file()
+          and "ROOT_DIRS={'config','scripts','tests'}" in manifest_implementation)
     # END HF-only, revision-pinned model source contract
 
     license_text = ROOT.joinpath("LICENSE").read_text(encoding="utf-8")
