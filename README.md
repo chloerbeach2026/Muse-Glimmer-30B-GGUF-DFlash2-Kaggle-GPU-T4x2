@@ -198,6 +198,22 @@ export MUSE_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe
 The first start downloads the target, DFlash2 draft and projector from Hugging Face, builds the pinned CUDA llama.cpp runtime if not cached, and attempts `CONTEXT_SIZE=131072`. On startup resource failure, it may fall back through smaller Context values; the effective Context/output limit is shown by status and response headers. Subsequent starts reuse files only after size/hash verification.
 
 For an actual long-running personal service, run on a persistent Linux GPU host; Kaggle is a qualification/runtime session and does not guarantee 24/7 uptime. The external endpoint must remain behind the authenticated gateway.
+### Optional systemd supervision (persistent Linux host)
+
+For start-at-boot and automatic recovery after backend/gateway failure:
+
+```bash
+sudo bash scripts/install_systemd_service.sh
+sudoedit /etc/muse-agent-server.env
+# Set MUSE_API_TOKEN; optionally set EXPOSURE_MODE=named, TUNNEL_TOKEN,
+# and EXPOSURE_PUBLIC_URL after configuring the Named Tunnel/DNS route.
+sudo systemctl enable --now muse-agent-server.service
+systemctl status muse-agent-server.service
+journalctl -u muse-agent-server.service -f
+```
+
+The optional systemd supervisor checks backend provenance, gateway health and exposure status, then restarts the stack with bounded exponential backoff. The installer does not start the model and never reads or prints secret values. The environment file is created with mode `0600`; keep it root-owned. The service account must have GPU access and write access to the project cache directories. This is an operator-managed personal service, not a high-availability cluster.
+
 ## Configuration
 
 Defaults live in `config/default.env`; profile values in `config/profiles.json` are applied by `serve.sh` unless a corresponding environment override is explicitly set.
