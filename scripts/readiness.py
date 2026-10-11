@@ -77,12 +77,14 @@ ENV_CONFIG_KEYS = (
     "EXTERNAL_MODE",
     "EXPOSURE_MODE",
     "KAGGLE_RUNTIME_REQUIRE_MANIFEST",
+    "MODEL_SOURCE_MODE", "MODEL_HF_REVISION", "MODEL_REPO", "MODELS_DIR",
 )
 
 
 def effective_config(root: Path, environ: dict | None = None) -> dict[str, str]:
     """Merge config/default.env with an explicit allowlist of env overrides."""
     cfg = load_default_env(root)
+    cfg.setdefault("CLOUDFLARED_BIN", str(root / "vendor" / "bin" / "cloudflared"))
     env = os.environ if environ is None else environ
     for key in ENV_CONFIG_KEYS:
         if key in env and env[key] != "":
@@ -198,6 +200,27 @@ def probe_gpu() -> dict:
 
 def probe_model(root: Path, kind: str, cfg: dict) -> dict:
     """Consult kaggle_runtime.discover_runtime for exact model presence/size/trusted-sha."""
+    source_mode = (cfg.get("MODEL_SOURCE_MODE") or "auto").strip().lower()
+    if source_mode == "hf":
+        if kind == "target":
+            repo_id = cfg.get("MODEL_REPO", "")
+            model_file = cfg.get("MODEL_FILE", FROZEN_TARGET_FILE)
+            revision = cfg.get("MODEL_HF_REVISION", "")
+            expected_size = cfg.get("MODEL_SIZE_BYTES", FROZEN_TARGET_SIZE)
+            expected_sha = cfg.get("MODEL_SHA256", FROZEN_TARGET_SHA)
+        else:
+            repo_id = cfg.get("DFLASH_HF_MODEL_REPO", "")
+            model_file = cfg.get("DFLASH_MODEL_FILE", FROZEN_DRAFT_FILE)
+            revision = cfg.get("DFLASH_HF_REVISION", "")
+            expected_size = cfg.get("DFLASH_MODEL_SIZE_BYTES", FROZEN_DRAFT_SIZE)
+            expected_sha = cfg.get("DFLASH_MODEL_SHA256", FROZEN_DRAFT_SHA)
+        if not (repo_id and revision and model_file and expected_size and expected_sha):
+            return {"kind": kind, "found": False, "selection": None, "size_match": "UNKNOWN", "trusted_sha_match": "UNKNOWN", "expected_sha": expected_sha, "expected_size": expected_size, "probe_error": True}
+        model_root = Path(os.environ.get("MODELS_DIR", str(root / "models"))).expanduser()
+        local_path = model_root / model_file
+        size_bytes = local_path.stat().st_size if local_path.is_file() else None
+        cache_ok = size_bytes == int(expected_size)
+        return {"kind": kind, "found": True, "selection": "exact", "size_match": "YES", "trusted_sha_match": "UNKNOWN" if cache_ok else "YES", "sha_source": "startup_sha256_verification" if cache_ok else "pinned_hf_revision+configured_sha256", "expected_sha": expected_sha, "expected_size": expected_size, "size_bytes": size_bytes, "local_path": str(local_path), "source_mode": "hf", "hf_repo": repo_id, "hf_revision": revision, "download_required": not cache_ok, "probe_error": False}
     if kind == "target":
         dataset = cfg.get("KAGGLE_MODEL_DATASET", "")
         model_file = cfg.get("MODEL_FILE", FROZEN_TARGET_FILE)
@@ -510,6 +533,8 @@ def _gpu_topology(gpu_count, required_count, required_vram, min_vram) -> str:
 def _model_status(kind: str, model: dict) -> tuple[str, str | None, str | None]:
     if model.get("probe_error"):
         return "ERROR", None, None
+    if model.get("download_required"):
+        return "DOWNLOAD_REQUIRED", None, f"{kind}_HF_DOWNLOAD_REQUIRED"
     if not model.get("found"):
         missing = "TARGET_MODEL_MISSING" if kind == "TARGET" else "DFLASH_MODEL_MISSING"
         return "MISSING", missing, None
@@ -530,6 +555,11 @@ def _result_model(kind: str, model: dict) -> dict:
         "size_match": model.get("size_match", "UNKNOWN"),
         "trusted_sha_match": model.get("trusted_sha_match", "UNKNOWN"),
         "full_runtime_verification": "DEFERRED_TO_SERVE",
+        "source_mode": model.get("source_mode", "kaggle"),
+        "hf_repo": model.get("hf_repo"),
+        "hf_revision": model.get("hf_revision"),
+        "local_path": model.get("local_path"),
+        "download_required": bool(model.get("download_required", False)),
     }
 
 
