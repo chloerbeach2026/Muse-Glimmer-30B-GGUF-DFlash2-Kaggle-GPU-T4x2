@@ -310,6 +310,18 @@ def main() -> int:
           and "HF_XET_NUM_CONCURRENT_RANGE_GETS=32" in cfg
           and "DFLASH_HF_REVISION=43c7eadd41352a299ea8e0a36b3157978dd63596" in cfg
           and "MM_PROJ_SHA256=f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6" in cfg)
+    serving = ROOT.joinpath("serve.sh").read_text(encoding="utf-8")
+    check("persistent serving pins all Hugging Face identities and refuses disabled hashes",
+          "MODEL_SOURCE_MODE=hf" in serving
+          and "MODEL_REPO" in serving
+          and "16f5840bef28e4018cf41a7ec9709d6fd89176f6" in serving
+          and "DFLASH_HF_MODEL_REPO" in serving
+          and "43c7eadd41352a299ea8e0a36b3157978dd63596" in serving
+          and "MM_PROJ_SHA256" in serving
+          and "VERIFY_MODEL_SHA256" in serving
+          and "VERIFY_DFLASH_SHA256" in serving)
+    check("persistent Context cannot exceed model maximum",
+          "CONTEXT_SIZE <= 131072" in serving and "MAX_TOKENS <= 131072" in serving)
     ports = {}
     for line in cfg.splitlines():
         if line.startswith("#") or "=" not in line:
