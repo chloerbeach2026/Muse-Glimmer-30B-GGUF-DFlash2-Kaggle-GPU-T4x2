@@ -7,6 +7,19 @@ trong tệp này.
 
 ## Unreleased
 
+### Changed — notebook production chỉ còn code cell
+
+- **`notebooks/kaggle-production.ipynb` giờ chỉ gồm code cell:** toàn bộ 26
+  markdown cell đã được loại bỏ; 18 code cell giữ nguyên thứ tự thực thi và
+  mỗi cell mở đầu bằng header tiếng Anh `# [Cell N/18] <chức năng>` để
+  notebook tự mô tả mà không cần markdown.
+- **Cụm contract chuyển vào code:** cảnh báo "do **not** attach" về token
+  giờ là comment trong cell credential và cụm tài liệu HF-only nằm trong
+  header cell cấu hình asset.
+- **`tests/test_public_contract.py` được điều chỉnh:** check contract nguồn
+  model HF giờ khớp cụm tài liệu trên toàn bộ văn bản notebook (code +
+  markdown) thay vì chỉ markdown cell.
+
 ### Changed — gia cố serving cho công việc agentic liên tục
 
 - **Flag serving agent tường minh trong `serve.sh`:** backend giờ start với

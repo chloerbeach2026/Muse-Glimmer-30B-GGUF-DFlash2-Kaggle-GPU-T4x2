@@ -229,6 +229,10 @@ def main() -> int:
         for cell in notebook.get("cells", [])
         if cell.get("cell_type") == "markdown"
     )
+    # The production notebook is code-only by contract (every code cell opens
+    # with an English "[Cell N/M] purpose" header), so documentation phrases
+    # must be matched against the FULL notebook text, not markdown alone.
+    notebook_text = notebook_code + "\\n" + notebook_markdown
     check("bilingual README documents HF-only weights and 32-way transfers",
           all("Hugging Face" in text for text in (readme_en, readme_vi))
           and all("HF_XET_NUM_CONCURRENT_RANGE_GETS=32" in text for text in (readme_en, readme_vi)))
@@ -239,8 +243,8 @@ def main() -> int:
           notebook_meta.get("model_source_contract") == "huggingface_only+immutable_revisions+expected_size+sha256"
           and notebook_meta.get("dflash2_input_contract") == "pinned_hf_revision+exact_filename+size+sha256"
           and notebook_meta.get("agent_context_target") == 131072
-          and "HF-only" in notebook_markdown
-          and "do **not** attach" in notebook_markdown.lower())
+          and "HF-only" in notebook_text
+          and "do **not** attach" in notebook_text.lower())
     check("notebook no longer requires Kaggle model/draft variations",
           "is_canonical_variation_path" not in notebook_code
           and "runtime_roots = sorted" not in notebook_code

@@ -7,6 +7,19 @@ recorded in this file.
 
 ## Unreleased
 
+### Changed — code-only production notebook
+
+- **`notebooks/kaggle-production.ipynb` now ships code cells only:** all 26
+  markdown cells were removed; the 18 code cells remain in execution order
+  and each one opens with an English `# [Cell N/18] <purpose>` header so the
+  notebook stays self-documenting without markdown.
+- **Contract phrases moved into code:** the "do **not** attach" token
+  warning now lives as a comment in the credential cell and the HF-only
+  model-source phrase lives in the asset-configuration cell header.
+- **`tests/test_public_contract.py` adapted:** the pinned HF model-source
+  contract check now matches documentation phrases against the combined
+  code + markdown notebook text instead of markdown cells alone.
+
 ### Changed — sustained agentic-work hardening
 
 - **Explicit agent-serving flags in `serve.sh`:** the persistent backend now
