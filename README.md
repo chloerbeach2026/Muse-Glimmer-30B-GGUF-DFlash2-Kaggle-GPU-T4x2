@@ -1,4 +1,4 @@
-# Muse-Glimmer-30B GGUF + DFlash2 on Kaggle T4x2
+# Muse-Glimmer-30B — Personal Agent Server (HF-only)
 > 🌐 Language / Ngôn ngữ: **English** | [Tiếng Việt](README.vi.md)
 
 ![Release](https://img.shields.io/badge/release-v1.0.0-blue)
@@ -11,7 +11,7 @@
 ![OpenAI compatible](https://img.shields.io/badge/API-OpenAI--compatible-606060)
 ![Self-hosted](https://img.shields.io/badge/reference-self--hosted-606060)
 
-**Self-hosted `llama.cpp` inference stack for Muse-Glimmer-30B GGUF, accelerated with DFlash2 speculative decoding on Kaggle NVIDIA T4 x2 and exposed through an authenticated OpenAI-compatible API gateway.**
+**Self-hosted Muse-Glimmer-30B inference server for sustained agentic coding through OpenAI-compatible clients, with DFlash2 speculative decoding, HF-only pinned assets, tool-call history support, full-context target, bounded request queue, and optional Cloudflare Quick or Named Tunnel.**
 
 > **This is not the upstream Muse-Glimmer-30B model repository.**
 > This repository provides the reproducible serving stack, pinned runtime, authenticated gateway, Kaggle production notebook, and operator workflow required to run the model on your own compute.
@@ -22,10 +22,10 @@
 - **Draft model:** `Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf`
 - **Inference runtime:** `llama.cpp` with CUDA
 - **Acceleration:** DFlash2 speculative decoding
-- **Validated compute:** Kaggle NVIDIA **T4 x2**
+- **Target compute profile:** NVIDIA **T4 x2** (qualification still required after these changes)
 - **API:** OpenAI-compatible chat completions with SSE streaming
 - **Access layer:** Bearer-authenticated gateway
-- **Optional public transport:** Cloudflare Quick Tunnel
+- **Optional public transport:** Cloudflare Quick Tunnel or token-based Named Tunnel
 
 > **This repository does not provide a shared hosted inference service.**
 > **Users run the stack on their own Kaggle account/infrastructure and consume their own GPU quota.**
@@ -63,17 +63,15 @@
 
 ## Overview
 
-A complete serving stack for `Muse-Glimmer-30B` GGUF models:
+A personal-serving stack for `Muse-Glimmer-30B` GGUF models:
 
 - **Persistent loopback backend** — `llama-server` bound to `127.0.0.1:8088`,
   started and supervised by `./serve.sh`.
-- **DFlash2 speculative decoding** — an attached 1.6 GB GGUF draft model
-  accelerates generation; toggled with `SERVE_PROFILE=baseline` to disable.
+- **DFlash2 speculative decoding** — a pinned Hugging Face draft GGUF is downloaded and hash-verified; `SERVE_PROFILE=baseline` disables draft decoding.
 - **Authenticated gateway** — `./expose.sh` runs `scripts/auth_proxy.py`, a
   loopback Bearer-auth proxy on `127.0.0.1:8090` that enforces a strict public
   contract and preserves SSE streaming.
-- **One-command orchestration** — `./external.sh` drives backend readiness and
-  exposure startup, status, endpoint discovery, and shutdown.
+- **One-command orchestration** — `./external.sh` drives download/build preflight, backend readiness, exposure startup, status, endpoint discovery, and shutdown.
 
 ## Scope / What this is
 
@@ -136,44 +134,25 @@ Controller entrypoints:
 
 ## Requirements
 
-- A Kaggle account and a notebook session with the **GPU T4 x2** accelerator.
-- A `MUSE_API_TOKEN` of **at least 32 printable characters** (your own secret,
-  used only by the gateway for Bearer auth).
-- `cloudflared` on `PATH` when using quick/named public exposure
-  (`EXPOSURE_MODE=quick` is the default).
-- Attached Kaggle inputs (see [Model files](#model-files)).
-- No GPU, tunnel, or model download is needed to run the deterministic test
-  suite (see [Reproducibility](#reproducibility)).
+- Linux x86-64, Python 3.12, Bash, Git, CMake/build tools, a working NVIDIA CUDA toolchain and the target GPU layout required by `config/default.env` (currently 2 GPUs with at least 14,000 MiB each; Kaggle T4 x2 is the qualification target).
+- Internet access to Hugging Face for first download and to the pinned llama.cpp source for a first runtime build.
+- A private `MUSE_API_TOKEN` of **at least 32 printable characters** for Bearer authentication.
+- For `EXPOSURE_MODE=named`, a Cloudflare Tunnel token and a configured public HTTPS hostname/DNS route. The pinned `cloudflared` binary is installed and hash-verified automatically; no system install is required.
+- Weights are downloaded only from immutable Hugging Face revisions; no Kaggle Model attachments are required. The CPU-only tests need no GPU, model weights, tunnel, or network.
 
-## Model files
+## Model assets (Hugging Face only)
 
-Attach these **exact Kaggle resources**. The names below are not generic search hints; they identify the public inputs used by the canonical Kaggle production notebook.
+The server refuses Kaggle-mounted weights and downloads exact target, DFlash2 draft, and vision projector files from immutable Hugging Face revisions. Each asset is verified by expected byte size and SHA-256 before serving.
 
-| Role | Kaggle type | Resource | Required variation/version | Required file | Size | SHA-256 |
-| --- | --- | --- | --- | --- | ---: | --- |
-| Target (primary) | Kaggle Model | [`dangkhoa2016/bartowski-muse-glimmer-30b-gguf`](https://www.kaggle.com/models/dangkhoa2016/bartowski-muse-glimmer-30b-gguf/Gguf/q4-k-m/1) | **GGUF / `q4-k-m` / `1`** | `Muse-Glimmer-30B-Q4_K_M.gguf` | 17,306,324,000 B | `0d3fc85f61d10fdc84072f0bba6005d61c1ac5605a2627b0fd5ea4ff8194c384` |
-| DFlash2 draft | Kaggle Model | [`dangkhoa2016/incoai-muse-glimmer-30b-dflash2-gguf`](https://www.kaggle.com/models/dangkhoa2016/incoai-muse-glimmer-30b-dflash2-gguf/Gguf/q4-k-m/1) | **GGUF / `q4-k-m` / `1`** | `Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf` | 1,645,657,280 B | `93dbfb6f88e4645dec1347cf93f9d6fc80b90d413038722385b2a8e53565c949` |
-| llama.cpp runtime | Kaggle Dataset | [`dangkhoa2016/muse-glimmer-30b-dflash2-llama-runtime`](https://www.kaggle.com/datasets/dangkhoa2016/muse-glimmer-30b-dflash2-llama-runtime) | dataset | pinned prebuilt CUDA runtime tree | — | verified by the runtime manifest |
+| Asset | Hugging Face repository | Pinned revision | File | Expected size | SHA-256 |
+| --- | --- | --- | --- | ---: | --- |
+| Target | `bartowski/Muse-Glimmer-30B-GGUF` | `16f5840bef28e4018cf41a7ec9709d6fd89176f6` | `Muse-Glimmer-30B-Q4_K_M.gguf` | 17,306,324,000 B | `0d3fc85f61d10fdc84072f0bba6005d61c1ac5605a2627b0fd5ea4ff8194c384` |
+| DFlash2 draft | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `dflash-Muse-Glimmer-30B-Q4_K_M.gguf` | 1,631,208,128 B | `b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef` |
+| Vision projector | `meta-models/Muse-Glimmer-30B-GGUF` | `43c7eadd41352a299ea8e0a36b3157978dd63596` | `mmproj-Muse-Glimmer-30B-Q4_K_M.gguf` | 1,400,328,928 B | `f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6` |
 
-> **Important:** use the dedicated DFlash2 **GGUF / `q4-k-m` / `1`** variation for this production demo. It mounts only the required Q4_K_M draft (~1.65 GB). The `default` variation is a legacy all-in-one bundle containing Q4_K_M, Q8_0, and BF16 (about 10 GB total) and should not be attached for the canonical production run.
+Download policy: `HF_DOWNLOAD_WORKERS=32`, `HF_XET_NUM_CONCURRENT_RANGE_GETS=32`, Xet high-performance mode, retry and native Hub cache resume. These settings target 32 concurrent Xet range requests per file plus up to 32 file workers; they do not promise that all 32 file workers are active while downloading a single file.
 
-### How to attach them in Kaggle
-
-1. Open your Kaggle notebook and choose **Add Input**.
-2. Add the target **Model** from the direct link above and select **GGUF → `q4-k-m` → version `1`**.
-3. Add the DFlash2 **Model** and select **GGUF → `q4-k-m` → version `1`**.
-4. Add the llama.cpp runtime **Dataset**.
-5. Keep all three attached when you use **Restart Session → Run All**.
-
-Kaggle mounts the canonical selections under paths shaped like (the outer mount layout may vary):
-
-```text
-/kaggle/input/models/dangkhoa2016/bartowski-muse-glimmer-30b-gguf/gguf/q4-k-m/1/Muse-Glimmer-30B-Q4_K_M.gguf
-/kaggle/input/models/dangkhoa2016/incoai-muse-glimmer-30b-dflash2-gguf/gguf/q4-k-m/1/Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf
-/kaggle/input/datasets/dangkhoa2016/muse-glimmer-30b-dflash2-llama-runtime
-```
-
-Kaggle may change the outer mount layout, so the notebook and runtime discover nested inputs recursively. The backend reads the attached target model **in place** and resolves the draft by exact filename. Serving remains exact: both model identities are re-validated by size and SHA-256 before every start.
+No model files are committed to Git. A local `models/` cache is reused only after exact identity verification. A missing, truncated or corrupted cache is re-downloaded from the pinned HF revision; the server will not start if size or SHA-256 differs.
 
 ## Integrity / hash verification
 
