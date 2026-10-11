@@ -319,14 +319,20 @@ class AuthProxyHandler(http.server.BaseHTTPRequestHandler):
                 P.ERROR_METHOD_NOT_ALLOWED))
             return
 
-        transfer_encoding = self.headers.get("Transfer-Encoding", "").strip()
-        if transfer_encoding:
+        transfer_encodings = self.headers.get_all("Transfer-Encoding", [])
+        if any(value.strip() for value in transfer_encodings):
             self._reject_json(400, P.build_error_body(
-                "Chunked request bodies are not supported.", "invalid_request_error",
+                "Transfer-Encoding request bodies are not supported.", "invalid_request_error",
                 P.ERROR_INVALID_REQUEST))
             return
 
-        length_header = self.headers.get("Content-Length", "0")
+        content_lengths = self.headers.get_all("Content-Length", [])
+        if len(content_lengths) > 1:
+            self._reject_json(400, P.build_error_body(
+                "Multiple Content-Length headers are not supported.", "invalid_request_error",
+                P.ERROR_INVALID_REQUEST))
+            return
+        length_header = content_lengths[0] if content_lengths else "0"
         try:
             length = int(length_header or "0")
         except ValueError:
