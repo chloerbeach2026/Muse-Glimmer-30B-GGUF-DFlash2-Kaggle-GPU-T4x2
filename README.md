@@ -390,19 +390,36 @@ Repeated admission is enforced by an exact slot lock and is covered by the
 deterministic test suite. Rate limits, payload limits, and timeouts are also
 enforced by the gateway before any request reaches the backend.
 
-## Optional public tunnel
+## Optional Cloudflare tunnel
 
-- `EXPOSURE_MODE=quick` (default) — `cloudflared` quick tunnel; print the URL
-  with `./external.sh endpoint`.
-- `EXPOSURE_MODE=named` — requires `TUNNEL_TOKEN` and a clean HTTPS
-  `EXPOSURE_PUBLIC_URL` (Tunnel configuration).
-- `EXPOSURE_MODE=proxy` — bring your own tunnel/LB; the gateway stays
-  loopback-only on `127.0.0.1:8090` and `./external.sh local-endpoint` prints
-  its URL.
+The repository bootstraps the pinned `cloudflared 2026.10.0` binary and checks its official architecture-specific SHA-256 before executing it. Both modes expose only the authenticated gateway, never backend port 8088.
 
-Every public path is still Bearer-authenticated by the gateway; the tunnel is
-transport only and never exposes `llama-server` directly.
+**Quick Tunnel (ephemeral URL):**
 
+```bash
+export EXPOSURE_MODE=quick
+./external.sh start
+./external.sh endpoint
+```
+
+**Named Tunnel (stable hostname):**
+
+1. In Cloudflare Zero Trust, create a Named Tunnel and configure a published application route/DNS hostname.
+2. Export the token and exact public origin configured for that tunnel; never store them in Git.
+3. Start and inspect the endpoint:
+
+```bash
+export EXPOSURE_MODE=named
+export TUNNEL_TOKEN='paste-token-from-cloudflare'
+export EXPOSURE_PUBLIC_URL='https://llm.example.com'
+./external.sh preflight
+./external.sh start
+./external.sh endpoint
+```
+
+`expose.sh` writes the Named Tunnel token into a mode-`0600` runtime-state file and deletes it during shutdown/failed startup. The hostname, DNS and tunnel route must be configured in Cloudflare; a token alone cannot create them.
+
+For either mode, public traffic passes through Bearer auth. Never expose `llama-server` directly.
 ## Shutdown / cleanup
 
 ```bash
@@ -422,7 +439,7 @@ runtime dirs (`vendor/`, `models/`, `runs/`).
 | --- | --- |
 | `readiness.sh` reports `SOURCE_MANIFEST` blocker | Modify runtime files → rerun `bash scripts/source-manifest.sh write` to regenerate `SOURCE_MANIFEST.sha256` |
 | `preflight` fails on credentials | Set `MUSE_API_TOKEN` ≥ 32 printable chars; for `named`, also `TUNNEL_TOKEN`/`EXPOSURE_PUBLIC_URL` |
-| `cloudflared` not found | Install it on `PATH`, or set `CLOUDFLARED_BIN` to an executable path |
+| `cloudflared` bootstrap failure | Inspect the download/hash error; the pinned installer needs HTTPS access to the official GitHub release. A custom `CLOUDFLARED_BIN` is operator-managed. |
 | Backend fails identity checks | Attach the exact Kaggle inputs listed in [Model files](#model-files) |
 | `429 muse_demo_busy` | A generation is already running; retry after the `Retry-After` window |
 | First start is slow | Runtime bootstrap + model state preparation is one-time work |
