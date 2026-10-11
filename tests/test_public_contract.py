@@ -298,6 +298,11 @@ def main() -> int:
         "127.0.0.1", 8088)
     check("gateway strips inbound Content-Length variants before recomputing body length",
           all(key.lower() != "content-length" for key in forwarded_headers))
+    proxy_constants = auth_proxy.AuthProxyHandler._proxy.__code__.co_consts
+    check("gateway rejects ambiguous inbound HTTP framing",
+          "Content-Length" in proxy_constants
+          and "Transfer-Encoding" in proxy_constants
+          and "Multiple Content-Length headers are not supported." in proxy_constants)
     check("gateway /ready public route allowed", P.ROUTE_ALLOW is None)
 
     check("gateway server version", getattr(auth_proxy.AuthProxyHandler, "server_version", None) == "MuseExternalProxy/1.0.0")
