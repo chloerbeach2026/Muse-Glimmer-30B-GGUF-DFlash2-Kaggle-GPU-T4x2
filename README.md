@@ -48,16 +48,17 @@
 12. [Gateway startup](#gateway-startup)
 13. [Readiness check](#readiness-check)
 14. [API usage](#api-usage)
-15. [SSE example](#sse-example)
-16. [Busy/concurrency behavior](#busyconcurrency-behavior)
-17. [Optional public tunnel](#optional-public-tunnel)
-18. [Shutdown / cleanup](#shutdown--cleanup)
-19. [Troubleshooting](#troubleshooting)
-20. [Security](#security)
-21. [Known limitations](#known-limitations)
-22. [Reproducibility](#reproducibility)
-23. [License](#license)
-24. [Contributing / support](#contributing--support)
+15. [Agent client compatibility](#agent-client-compatibility)
+16. [SSE example](#sse-example)
+17. [Busy/concurrency behavior](#busyconcurrency-behavior)
+18. [Optional public tunnel](#optional-public-tunnel)
+19. [Shutdown / cleanup](#shutdown--cleanup)
+20. [Troubleshooting](#troubleshooting)
+21. [Security](#security)
+22. [Known limitations](#known-limitations)
+23. [Reproducibility](#reproducibility)
+24. [License](#license)
+25. [Contributing / support](#contributing--support)
 
 ---
 
@@ -308,6 +309,47 @@ curl -sS https://<public-endpoint>/v1/chat/completions \
 `GET /health` is public and reports gateway health; `GET /ready` is public,
 probes the backend, and strips `Authorization` before contacting it.
 
+## Agent client compatibility
+
+The gateway exposes an OpenAI-compatible `/v1/chat/completions` API, preserves streaming, accepts assistant `tool_calls` and subsequent `tool` messages, and injects `reasoning_strength=high` unless the client sends an allowed value. Client context/output settings must mirror the *effective* runtime values, not assume the requested 131,072 always loaded. Read `./serve.sh status` and check `X-Muse-Effective-Context-Size` / `X-Muse-Max-Output-Tokens` response headers.
+
+### OpenCode IDE
+
+For a client on the same host, set the OpenAI-compatible provider's `baseURL` to `http://127.0.0.1:8090/v1`, model ID to `muse-glimmer-30B`, and API key to the environment variable `MUSE_API_TOKEN`. Set `limit.context` and `limit.output` to the effective values reported by the server. A starting configuration (replace limits if startup fell back):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "muse/muse-glimmer-30B",
+  "provider": {
+    "muse": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Muse Glimmer (local)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8090/v1",
+        "apiKey": "{env:MUSE_API_TOKEN}"
+      },
+      "models": {
+        "muse-glimmer-30B": {
+          "name": "Muse Glimmer 30B",
+          "limit": { "context": 131072, "output": 131072 }
+        }
+      }
+    }
+  }
+}
+```
+
+### Hermes Agent
+
+Create a custom OpenAI-compatible provider/model with base URL `http://127.0.0.1:8090/v1`, API token from `MUSE_API_TOKEN`, model ID `muse-glimmer-30B`, and the actual Context/output limits shown by the gateway. Do not copy 131,072 into the client after an automatic Context fallback. Verify a complete tool loop (assistant tool call → tool result → assistant final response) before relying on unattended tasks.
+
+### Claude Code Desktop through OmniRoute
+
+Use OmniRoute as the Anthropic-compatible ingress for Claude Code, and configure the OmniRoute provider/upstream to call this server's OpenAI-compatible endpoint. In a same-host setup, the upstream is `http://127.0.0.1:8090/v1` with `MUSE_API_TOKEN`; when using a tunnel, use the HTTPS origin from `./external.sh endpoint` plus `/v1`. This is a protocol bridge, not a guarantee of official Anthropic support. Test `tool_use`, streamed events, cancellation, and multi-turn tool results with the exact OmniRoute version you run.
+
+**Security:** use loopback when the desktop shares the model host. For remote clients use the authenticated gateway over HTTPS, never expose port 8088 directly, and never put either token in a committed config file.
+
 ## SSE example
 
 ```bash
@@ -339,7 +381,7 @@ Retry-After: 5
 {
   "error": {
     "type": "muse_demo_busy",
-    "message": "Another inference is in progress; the demo accepts one request at a time."
+    "message": "The inference queue is full or its wait deadline expired; retry after the indicated delay."
   }
 }
 ```
@@ -400,9 +442,9 @@ See [SECURITY.md](SECURITY.md). Highlights:
 
 ## Known limitations
 
-- Single concurrent request (`PARALLEL_SLOTS=1`) by design.
-- Requires exactly the tested hardware profile (`GPU T4 x2` on Kaggle,
-  ≥ 14000 MiB per GPU).
+- One active generation at a time (`PARALLEL_SLOTS=1`); up to eight requests may wait in the bounded gateway queue.
+- The current canonical GPU split gate targets two GPUs with ≥ 14,000 MiB each; Kaggle T4 x2 still needs an actual re-qualification run after these changes.
+- Kaggle is not an always-on host. A personal always-running service needs a persistent host/process supervisor; a Cloudflare tunnel cannot keep an ephemeral notebook alive.
 - No multi-user tenant isolation; the gateway is a single-owner demo.
 - No model fine-tuning, no training, no embedding endpoints.
 - Pinned runtime/model identities are exact; free substitution is not
