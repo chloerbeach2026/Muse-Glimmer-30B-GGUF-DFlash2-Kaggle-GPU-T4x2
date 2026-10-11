@@ -79,7 +79,9 @@ def safe_request_headers(headers: Iterable[tuple[str, str]], backend_host: str, 
     out: dict[str, str] = {}
     for key, value in headers:
         lower = key.lower()
-        if lower in HOP_BY_HOP or lower in SENSITIVE_FORWARD_HEADERS or lower == "host":
+        # Content-Length is reconstructed from the exact body forwarded below.
+        # Strip it case-insensitively to prevent lower-case duplicate header variants.
+        if lower in HOP_BY_HOP or lower in SENSITIVE_FORWARD_HEADERS or lower in {"host", "content-length"}:
             continue
         out[key] = value
     out["Host"] = f"{backend_host}:{backend_port}"
