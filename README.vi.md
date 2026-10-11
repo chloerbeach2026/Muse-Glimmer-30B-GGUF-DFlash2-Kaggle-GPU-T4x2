@@ -48,16 +48,17 @@
 12. [Khởi động gateway](#khởi-động-gateway)
 13. [Kiểm tra readiness](#kiểm-tra-readiness)
 14. [Sử dụng API](#sử-dụng-api)
-15. [Ví dụ SSE](#ví-dụ-sse)
-16. [Hành vi busy / đồng thời](#hành-vi-busy--đồng-thời)
-17. [Tunnel công khai tùy chọn](#tunnel-công-khai-tùy-chọn)
-18. [Tắt máy / dọn dẹp](#tắt-máy--dọn-dẹp)
-19. [Xử lý sự cố](#xử-lý-sự-cố)
-20. [Bảo mật](#bảo-mật)
-21. [Hạn chế đã biết](#hạn-chế-đã-biết)
-22. [Tái lập](#tái-lập)
-23. [Giấy phép](#giấy-phép)
-24. [Đóng góp / hỗ trợ](#đóng-góp--hỗ-trợ)
+15. [Tương thích client agent](#tương-thích-client-agent)
+16. [Ví dụ SSE](#ví-dụ-sse)
+17. [Hành vi busy / đồng thời](#hành-vi-busy--đồng-thời)
+18. [Tunnel công khai tùy chọn](#tunnel-công-khai-tùy-chọn)
+19. [Tắt máy / dọn dẹp](#tắt-máy--dọn-dẹp)
+20. [Xử lý sự cố](#xử-lý-sự-cố)
+21. [Bảo mật](#bảo-mật)
+22. [Hạn chế đã biết](#hạn-chế-đã-biết)
+23. [Tái lập](#tái-lập)
+24. [Giấy phép](#giấy-phép)
+25. [Đóng góp / hỗ trợ](#đóng-góp--hỗ-trợ)
 
 ---
 
@@ -307,6 +308,47 @@ curl -sS https://<public-endpoint>/v1/chat/completions \
 `GET /health` là công khai và báo sức khỏe gateway; `GET /ready` công khai,
 probe backend và loại bỏ `Authorization` trước khi liên lạc với nó.
 
+## Tương thích client agent
+
+Gateway cung cấp API OpenAI-compatible `/v1/chat/completions`, giữ streaming, chấp nhận assistant `tool_calls` và message `tool` tiếp theo, đồng thời thêm `reasoning_strength=high` nếu client không gửi giá trị được phép. Context/output phía client phải khớp giá trị runtime *thực tế*, không giả định Context 131.072 luôn load thành công. Xem `./serve.sh status` và response headers `X-Muse-Effective-Context-Size` / `X-Muse-Max-Output-Tokens`.
+
+### OpenCode IDE
+
+Với client chạy cùng host, đặt `baseURL` của provider OpenAI-compatible là `http://127.0.0.1:8090/v1`, model ID là `muse-glimmer-30B`, và API key đọc từ biến môi trường `MUSE_API_TOKEN`. `limit.context` và `limit.output` phải dùng giá trị hiệu lực được server báo cáo. Cấu hình khởi đầu dưới đây cần chỉnh nếu startup fallback xuống Context nhỏ hơn:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "muse/muse-glimmer-30B",
+  "provider": {
+    "muse": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Muse Glimmer (local)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8090/v1",
+        "apiKey": "{env:MUSE_API_TOKEN}"
+      },
+      "models": {
+        "muse-glimmer-30B": {
+          "name": "Muse Glimmer 30B",
+          "limit": { "context": 131072, "output": 131072 }
+        }
+      }
+    }
+  }
+}
+```
+
+### Hermes Agent
+
+Tạo custom OpenAI-compatible provider/model với base URL `http://127.0.0.1:8090/v1`, token từ `MUSE_API_TOKEN`, model ID `muse-glimmer-30B` và giới hạn Context/output thực tế gateway thông báo. Không giữ 131.072 ở client sau khi server tự động fallback. Trước khi dùng cho tác vụ unattended, kiểm tra chu trình tool đầy đủ (assistant tool call → tool result → assistant trả lời cuối).
+
+### Claude Code Desktop qua OmniRoute
+
+Dùng OmniRoute làm cổng vào Anthropic-compatible cho Claude Code và cấu hình provider/upstream của OmniRoute gọi endpoint OpenAI-compatible của server này. Cùng host thì upstream là `http://127.0.0.1:8090/v1` kèm `MUSE_API_TOKEN`; qua tunnel dùng HTTPS origin từ `./external.sh endpoint` rồi thêm `/v1`. Đây là cầu nối protocol, không phải cam kết hỗ trợ chính thức từ Anthropic. Kiểm tra `tool_use`, sự kiện streaming, cancellation và tool result nhiều lượt với đúng phiên bản OmniRoute đang dùng.
+
+**Bảo mật:** dùng loopback nếu desktop cùng host với model. Client từ xa phải dùng gateway đã xác thực qua HTTPS; không phơi trực tiếp cổng 8088 và không commit token vào file cấu hình.
+
 ## Ví dụ SSE
 
 ```bash
@@ -338,7 +380,7 @@ Retry-After: 5
 {
   "error": {
     "type": "muse_demo_busy",
-    "message": "Another inference is in progress; the demo accepts one request at a time."
+    "message": "The inference queue is full or its wait deadline expired; retry after the indicated delay."
   }
 }
 ```
@@ -397,9 +439,9 @@ Xem [SECURITY.md](SECURITY.md). Những điểm chính:
 
 ## Hạn chế đã biết
 
-- Một yêu cầu đồng thời (`PARALLEL_SLOTS=1`) theo thiết kế.
-- Yêu cầu đúng hồ sơ phần cứng đã kiểm thử (`GPU T4 x2` trên Kaggle,
-  ≥ 14000 MiB mỗi GPU).
+- Chỉ một generation hoạt động (`PARALLEL_SLOTS=1`); tối đa tám request chờ trong hàng đợi hữu hạn.
+- Serving contract GPU hiện nhắm tới hai GPU, mỗi GPU ≥ 14.000 MiB; cần chạy qualification thực trên Kaggle T4 x2 sau thay đổi này.
+- Kaggle không phải host luôn bật. Dịch vụ cá nhân liên tục cần host bền vững/process supervisor; tunnel Cloudflare không thể giữ notebook đã hết hạn tiếp tục chạy.
 - Không có cô lập tenant đa người dùng; gateway là demo một chủ sở hữu.
 - Không fine-tune mô hình, không training, không embedding endpoints.
 - Runtime/model pinned là exact; không hỗ trợ thay thế tự do bởi persistent
