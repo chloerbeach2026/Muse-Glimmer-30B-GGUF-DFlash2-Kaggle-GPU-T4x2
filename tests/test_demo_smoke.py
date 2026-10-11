@@ -369,7 +369,7 @@ def main() -> int:
 
         try:
             t0 = time.monotonic()
-            st, _, _ = request(slow_port, "GET", "/v1/chat/completions", timeout=8)
+            st, _, _ = request(slow_port, "POST", "/v1/chat/completions", body=chat_payload(), timeout=8)
             elapsed = time.monotonic() - t0
             check("hanging stream fails closed via timeout", st in (500, 502) or elapsed < 8)
             check("hanging stream did not hang past hard deadline", elapsed < 6.0)
