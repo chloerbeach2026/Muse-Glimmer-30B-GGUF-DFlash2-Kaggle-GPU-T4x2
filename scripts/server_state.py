@@ -116,6 +116,12 @@ def status_report(path: Path, urls: list[str]) -> dict[str, Any]:
         effective_status = "degraded" if not healthy else "ready"
     out = dict(data)
     out.update(status=effective_status, owned=True, healthy=healthy, state_file=str(path))
+    context_value = out.get("context_size")
+    requested_output = out.get("max_tokens")
+    if isinstance(context_value, int) and context_value > 0:
+        out["effective_context_size"] = context_value
+        if isinstance(requested_output, int) and requested_output > 0:
+            out["effective_max_output_tokens"] = min(context_value, requested_output, 131072)
     return out
 
 
@@ -129,7 +135,9 @@ def print_report(report: dict[str, Any], fmt: str) -> None:
         ("HEALTHY", "healthy"), ("TARGET", "target_path"),
         ("TARGET_SHA256", "target_sha256"), ("DRAFT", "draft_path"),
         ("DRAFT_SHA256", "draft_sha256"), ("CONTEXT_SIZE", "context_size"),
-        ("MAX_TOKENS", "max_tokens"), ("MM_PROJ_SHA256", "mmproj_sha256"),
+        ("EFFECTIVE_CONTEXT_SIZE", "effective_context_size"),
+        ("REQUESTED_MAX_TOKENS", "max_tokens"), ("MAX_TOKENS", "effective_max_output_tokens"),
+        ("MM_PROJ_SHA256", "mmproj_sha256"),
         ("RUNTIME_SOURCE", "runtime_source"),
         ("RUNTIME_COMMIT", "runtime_commit"), ("CUDA_VISIBLE_DEVICES", "cuda_visible_devices"),
         ("GPU_COUNT", "gpu_count"), ("LOG", "log"), ("STATE_FILE", "state_file"),
