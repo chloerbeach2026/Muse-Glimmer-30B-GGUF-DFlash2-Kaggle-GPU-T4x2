@@ -18,8 +18,8 @@ CANONICAL_TARGET_FILE='Muse-Glimmer-30B-Q4_K_M.gguf'
 CANONICAL_TARGET_SIZE='17306324000'
 CANONICAL_TARGET_SHA='0d3fc85f61d10fdc84072f0bba6005d61c1ac5605a2627b0fd5ea4ff8194c384'
 CANONICAL_DRAFT_FILE='Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf'
-CANONICAL_DRAFT_SIZE='1645657280'
-CANONICAL_DRAFT_SHA='93dbfb6f88e4645dec1347cf93f9d6fc80b90d413038722385b2a8e53565c949'
+CANONICAL_DRAFT_SIZE='1631208128'
+CANONICAL_DRAFT_SHA='b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef'
 CANONICAL_RUNTIME_COMMIT='64f765f5adefa4620dddda436ce56f1430435536'
 
 usage() {
@@ -264,8 +264,8 @@ start_server() {
     echo "ERROR: context per slot ($context_per_slot) is below the safe minimum of 4096." >&2
     exit 4
   }
-  (( MAX_TOKENS >= 1 && MAX_TOKENS <= CONTEXT_PER_SLOT )) || {
-    echo "ERROR: MAX_TOKENS=$MAX_TOKENS must be between 1 and context per slot ($CONTEXT_PER_SLOT)." >&2
+  (( MAX_TOKENS >= 1 && MAX_TOKENS <= 131072 )) || {
+    echo "ERROR: MAX_TOKENS=$MAX_TOKENS must be between 1 and the model output ceiling 131072." >&2
     exit 4
   }
 
@@ -280,7 +280,7 @@ start_server() {
   local -a gpu_args=(-ngl "$GPU_LAYERS" -sm "$GPU_SPLIT_MODE")
   [[ -n "${GPU_TENSOR_SPLIT:-}" ]] && gpu_args+=(-ts "$GPU_TENSOR_SPLIT")
   server_help="$("$server_bin" --help 2>&1)" || { echo "ERROR: unable to inspect llama-server flags." >&2; exit 4; }
-  for required_flag in --jinja --chat-template-kwargs --mmproj --cache-type-k --cache-type-v; do
+  for required_flag in --jinja --mmproj --cache-type-k --cache-type-v; do
     grep -q -- "$required_flag" <<<"$server_help" || {
       echo "ERROR: pinned llama-server does not support required agent flag $required_flag." >&2
       exit 4
@@ -292,7 +292,6 @@ start_server() {
     "${gpu_args[@]}"
     --host "$SERVER_HOST" --port "$SERVER_PORT" --jinja
     --temp "$TEMPERATURE" --top-p "$TOP_P" --top-k "$TOP_K"
-    --chat-template-kwargs "{\"reasoning_strength\":\"$REASONING_STRENGTH\"}"
     --cache-type-k q8_0 --cache-type-v q8_0
   )
   if [[ -n "$MM_PROJ_PATH" ]]; then server_cmd+=(--mmproj "$MM_PROJ_PATH"); fi
@@ -328,7 +327,7 @@ start_server() {
   export SERVE_META_THREADS="$threads" SERVE_META_BATCH_THREADS="$batch_threads"
   for candidate in "${context_candidates[@]}"; do
     next_context=$(( candidate / PARALLEL_SLOTS ))
-    (( next_context >= 4096 && MAX_TOKENS <= next_context )) || continue
+    (( next_context >= 4096 )) || continue
     local -a attempt_cmd=("${server_cmd[@]}")
     for ((i=0; i<${#attempt_cmd[@]}; i++)); do
       if [[ "${attempt_cmd[$i]}" == "-c" ]] && (( i + 1 < ${#attempt_cmd[@]} )); then
