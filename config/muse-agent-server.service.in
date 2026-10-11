@@ -1,0 +1,33 @@
+[Unit]
+Description=Muse Glimmer Personal Agent Server (HF-only, supervised)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_GROUP@
+WorkingDirectory=@PROJECT_ROOT@
+EnvironmentFile=-@ENV_FILE@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/bin/bash @PROJECT_ROOT@/scripts/agent_supervisor.sh
+Restart=always
+RestartSec=5
+TimeoutStartSec=infinity
+TimeoutStopSec=150
+KillMode=mixed
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=@PROJECT_ROOT@
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
