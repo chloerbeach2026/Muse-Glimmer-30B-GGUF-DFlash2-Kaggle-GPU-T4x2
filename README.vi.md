@@ -389,18 +389,36 @@ Việc cấp admission lặp lại bị chặn bởi một slot lock chính xác
 tra trong bộ test deterministic. Rate limit, giới hạn payload và timeout cũng
 được gateway thực thi trước khi bất kỳ yêu cầu nào chạm tới backend.
 
-## Tunnel công khai tùy chọn
+## Cloudflare tunnel tùy chọn
 
-- `EXPOSURE_MODE=quick` (mặc định) — cloudflared quick tunnel; in URL bằng
-  `./external.sh endpoint`.
-- `EXPOSURE_MODE=named` — yêu cầu `TUNNEL_TOKEN` và một `EXPOSURE_PUBLIC_URL`
-  HTTPS hợp lệ (cấu hình Tunnel).
-- `EXPOSURE_MODE=proxy` — tự mang tunnel/LB; gateway vẫn loopback trên
-  `127.0.0.1:8090` và `./external.sh local-endpoint` in URL của nó.
+Repository tự cài binary `cloudflared 2026.10.0` đã pin và kiểm tra SHA-256 chính thức theo kiến trúc trước khi thực thi. Cả hai mode chỉ expose gateway có xác thực, không expose trực tiếp backend cổng 8088.
 
-Mọi đường công khai vẫn được gateway xác thực Bearer; tunnel chỉ là tầng vận
-chuyển và không bao giờ phơi trực tiếp `llama-server`.
+**Quick Tunnel (URL tạm thời):**
 
+```bash
+export EXPOSURE_MODE=quick
+./external.sh start
+./external.sh endpoint
+```
+
+**Named Tunnel (hostname ổn định):**
+
+1. Trong Cloudflare Zero Trust, tạo Named Tunnel và cấu hình published application route/DNS hostname.
+2. Export token cùng public origin chính xác đã cấu hình cho tunnel; không lưu chúng trong Git.
+3. Start và kiểm tra endpoint:
+
+```bash
+export EXPOSURE_MODE=named
+export TUNNEL_TOKEN='dán-token-lấy-từ-cloudflare'
+export EXPOSURE_PUBLIC_URL='https://llm.example.com'
+./external.sh preflight
+./external.sh start
+./external.sh endpoint
+```
+
+`expose.sh` ghi token Named Tunnel vào file runtime-state quyền `0600` và xóa file khi shutdown hoặc startup thất bại. Hostname, DNS và tunnel route phải được cấu hình trong Cloudflare; chỉ có token không đủ để repository tự tạo chúng.
+
+Cả hai mode đều đi qua Bearer auth. Tuyệt đối không expose trực tiếp `llama-server`.
 ## Tắt máy / dọn dẹp
 
 ```bash
@@ -420,7 +438,7 @@ hoàn toàn một phiên, tắt mọi thứ và xóa `artifacts/` cùng các th�
 | --- | --- |
 | `readiness.sh` báo blocker `SOURCE_MANIFEST` | Đã sửa tệp runtime → chạy lại `bash scripts/source-manifest.sh write` để tái tạo `SOURCE_MANIFEST.sha256` |
 | `preflight` lỗi credentials | Đặt `MUSE_API_TOKEN` ≥ 32 ký tự in được; với `named`, thêm `TUNNEL_TOKEN`/`EXPOSURE_PUBLIC_URL` |
-| Không tìm thấy `cloudflared` | Cài đặt vào `PATH`, hoặc đặt `CLOUDFLARED_BIN` trỏ tới tệp thực thi |
+| Bootstrap `cloudflared` thất bại | Xem lỗi download/hash; installer đã pin cần HTTPS tới GitHub release chính thức. `CLOUDFLARED_BIN` tùy chỉnh do operator quản lý. |
 | Backend lỗi kiểm định danh tính | Đính kèm đúng các Kaggle inputs trong [Tệp mô hình](#tệp-mô-hình) |
 | `429 muse_demo_busy` | Đang có generation chạy; thử lại sau cửa sổ `Retry-After` |
 | Lần start đầu chậm | Bootstrap runtime + chuẩn bị state mô hình là việc làm một lần |
