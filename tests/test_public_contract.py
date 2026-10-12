@@ -323,6 +323,16 @@ def main() -> int:
           'HF_DOWNLOAD_START repo=$repo_id file=$filename revision=$revision workers=${HF_DOWNLOAD_WORKERS:-32} xet_range_gets=${HF_XET_NUM_CONCURRENT_RANGE_GETS:-32}" >&2' in common_shell
           and '--max-workers "${HF_DOWNLOAD_WORKERS:-32}" >&2; then' in common_shell
           and 'HF_DOWNLOAD_DONE repo=$repo_id file=$filename bytes=$(stat -Lc' in common_shell)
+    check("Kaggle llama.cpp runtime is prebuilt-only and manifest-verified",
+          "KAGGLE_INPUT_ROOT=/kaggle/input" in cfg
+          and "KAGGLE_RUNTIME_DATASET=muse-glimmer-30b-dflash2-llama-runtime" in cfg
+          and "KAGGLE_RUNTIME_REQUIRE_MANIFEST=1" in cfg
+          and "KAGGLE_RUNTIME_COPY_MODE=never" in cfg
+          and "LLAMA_SOURCE_MODE=kaggle" in cfg
+          and "source builds are disabled" in ROOT.joinpath("scripts/resolve_kaggle_llama.sh").read_text(encoding="utf-8")
+          and notebook_meta.get("llama_runtime_input_contract") == "attached_kaggle_dataset+verified_manifest+prebuilt_only+no_build"
+          and 'assert llama_state.get("LLAMA_RUNTIME_SOURCE") == "kaggle_prebuilt"' in notebook_code
+          and 'assert llama_state.get("LLAMA_RUNTIME_MANIFEST_VERIFIED") == "1"' in notebook_code)
     check("gateway full agent serving uses pinned HF sources and context",
           "MODEL_SOURCE_MODE=hf" in cfg
           and "CONTEXT_SIZE=131072" in cfg
