@@ -161,7 +161,15 @@ if [[ -n "$BIN_DIR" ]]; then
   echo "Kaggle prebuilt runtime was discovered but failed validation (direct=${direct_rc:-n/a}); checking for dataset source snapshot." >&2
 fi
 
-# 2) If the dataset has a llama.cpp source snapshot, build that exact source to writable cache.
+# 2) Source builds are available only in auto/build modes. The canonical Kaggle
+# mode is intentionally prebuilt-only: if Add Input is configured incorrectly or
+# the runtime is incompatible, fail loudly instead of spending time compiling.
+if [[ "${LLAMA_SOURCE_MODE:-auto}" == "kaggle" ]]; then
+  echo "ERROR: LLAMA_SOURCE_MODE=kaggle requires a validated prebuilt runtime from the attached dataset; source builds are disabled." >&2
+  exit 20
+fi
+
+# 3) Optional compatibility path for explicit auto/build modes: build a source snapshot.
 if [[ -n "$SOURCE_DIR" ]]; then
   missing=()
   for c in cmake g++ make; do command -v "$c" >/dev/null 2>&1 || missing+=("$c"); done
