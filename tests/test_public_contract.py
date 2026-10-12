@@ -330,6 +330,9 @@ def main() -> int:
           and "KAGGLE_RUNTIME_COPY_MODE=never" in cfg
           and "LLAMA_SOURCE_MODE=kaggle" in cfg
           and "source builds are disabled" in ROOT.joinpath("scripts/resolve_kaggle_llama.sh").read_text(encoding="utf-8")
+          and 'child["LLAMA_SOURCE_MODE"] = "kaggle"' in notebook_code
+          and 'child["KAGGLE_RUNTIME_DATASET"] = "muse-glimmer-30b-dflash2-llama-runtime"' in notebook_code
+          and 'child["KAGGLE_RUNTIME_REQUIRE_MANIFEST"] = "1"' in notebook_code
           and notebook_meta.get("llama_runtime_input_contract") == "attached_kaggle_dataset+verified_manifest+prebuilt_only+no_build"
           and 'assert llama_state.get("LLAMA_RUNTIME_SOURCE") == "kaggle_prebuilt"' in notebook_code
           and 'assert llama_state.get("LLAMA_RUNTIME_MANIFEST_VERIFIED") == "1"' in notebook_code)
