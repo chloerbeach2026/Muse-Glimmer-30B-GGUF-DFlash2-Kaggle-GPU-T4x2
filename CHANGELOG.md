@@ -7,6 +7,43 @@ recorded in this file.
 
 ## Unreleased
 
+### Changed — llama.cpp runtime is prebuilt-only from the attached Kaggle dataset
+
+- **In-session compilation is disabled:** `config/default.env` now pins
+  `LLAMA_SOURCE_MODE=kaggle`, `KAGGLE_RUNTIME_DATASET=muse-glimmer-30b-dflash2-llama-runtime`,
+  and `KAGGLE_RUNTIME_REQUIRE_MANIFEST=1`. `scripts/setup.sh` resolves the
+  attached Kaggle dataset first (discovered at both `/kaggle/input/<slug>` and
+  `/kaggle/input/datasets/<owner>/<slug>`) and `scripts/resolve_kaggle_llama.sh`
+  exits with a loud error instead of compiling when no validated prebuilt
+  runtime is available, so every run serves exactly the pinned upstream commit.
+- **Manifest-strict provenance:** the dataset's `runtime-manifest.json`
+  (source repo + commit + CUDA architectures + per-binary SHA-256) must verify
+  against the pinned z-lab commit before the prebuilt binaries are accepted,
+  and `serve.sh` continues to refuse unverified `kaggle_prebuilt*` runtimes.
+- **Notebook enforces the contract end to end:** the setup cell pins
+  `LLAMA_SOURCE_MODE=kaggle` and the runtime dataset slug into the child
+  environment and declares `llama_runtime_input_contract=
+  attached_kaggle_dataset+verified_manifest+prebuilt_only+no_build` in the
+  notebook metadata; the post-start cell asserts `LLAMA_RUNTIME_SOURCE` is
+  exactly `kaggle_prebuilt`, `LLAMA_RUNTIME_MANIFEST_VERIFIED=1`, and a
+  dataset root under `datasets/dangkhoa2016/muse-glimmer-30b-dflash2-llama-runtime`,
+  then records the evidence in SESSION.
+- **Contract tests updated:** `tests/test_public_contract.py` now asserts the
+  prebuilt-only configuration, the resolver's "source builds are disabled"
+  guard, and the notebook-side contract strings.
+
+### Fixed — cloudflared bootstrap exec-bit ordering
+
+- **Cell 7 of the production notebook no longer fails on a fresh download:**
+  the version probe executed the freshly downloaded binary before the exec
+  bit was granted, so `curl`'s 0644 mode made `run([...])` raise
+  `PermissionError` and every fresh download was rejected as
+  `version_probe_error`. The temp binary is now chmod'ed to 0755 before the
+  probe (chmod performs no execution, so the pinned SHA-256 is still fully
+  verified before the binary is ever executed), the cached-copy branch
+  restores the exec bit before probing as well, and probe rejections now
+  include the exception detail.
+
 ### Changed — code-only production notebook
 
 - **`notebooks/kaggle-production.ipynb` now ships code cells only:** all 26

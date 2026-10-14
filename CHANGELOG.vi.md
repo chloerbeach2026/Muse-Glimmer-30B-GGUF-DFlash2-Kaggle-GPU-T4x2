@@ -7,6 +7,41 @@ trong tệp này.
 
 ## Unreleased
 
+### Changed — runtime llama.cpp chỉ dùng bản dựng sẵn từ Kaggle dataset attach
+
+- **Không còn compile trong phiên:** `config/default.env` giờ ghim
+  `LLAMA_SOURCE_MODE=kaggle`, `KAGGLE_RUNTIME_DATASET=muse-glimmer-30b-dflash2-llama-runtime`,
+  và `KAGGLE_RUNTIME_REQUIRE_MANIFEST=1`. `scripts/setup.sh` ưu tiên resolve
+  Kaggle dataset đã attach (tìm thấy ở cả `/kaggle/input/<slug>` và
+  `/kaggle/input/datasets/<owner>/<slug>`) và `scripts/resolve_kaggle_llama.sh`
+  sẽ dừng với lỗi rõ ràng thay vì compile khi không có runtime dựng sẵn hợp lệ,
+  nên mọi lần chạy phục vụ đúng commit upstream đã ghim.
+- **Provenance nghiêm ngặt theo manifest:** `runtime-manifest.json` của
+  dataset (repo nguồn + commit + kiến trúc CUDA + SHA-256 từng binary) phải
+  verify khớp với commit z-lab đã ghim trước khi binary dựng sẵn được chấp nhận,
+  và `serve.sh` vẫn từ chối runtime `kaggle_prebuilt*` chưa được xác minh.
+- **Notebook thực thi hợp đồng đầu-cuối:** cell setup ghim
+  `LLAMA_SOURCE_MODE=kaggle` và slug dataset runtime vào môi trường con, đồng
+  thời khai báo `llama_runtime_input_contract=
+  attached_kaggle_dataset+verified_manifest+prebuilt_only+no_build` trong
+  metadata notebook; cell sau khi start assert `LLAMA_RUNTIME_SOURCE` đúng bằng
+  `kaggle_prebuilt`, `LLAMA_RUNTIME_MANIFEST_VERIFIED=1`, và dataset root nằm
+  dưới `datasets/dangkhoa2016/muse-glimmer-30b-dflash2-llama-runtime`, rồi ghi
+  bằng chứng vào SESSION.
+- **Contract test được cập nhật:** `tests/test_public_contract.py` giờ assert
+  cấu hình prebuilt-only, cơ chế "source builds are disabled" của resolver, và
+  các chuỗi hợp đồng trong notebook.
+
+### Fixed — thứ tự cấp exec-bit khi bootstrap cloudflared
+
+- **Cell 7 của notebook production không còn fail khi tải mới:** version probe
+  chạy binary vừa tải trước khi exec bit được cấp, nên mode 0644 của `curl`
+  khiến `run([...])` raise `PermissionError` và mọi lần tải mới bị từ chối với
+  nhãn `version_probe_error`. Binary tạm giờ được chmod 0755 trước probe
+  (chmod không thực thi, nên SHA-256 ghim vẫn được xác minh đầy đủ trước khi
+  binary được chạy lần nào), nhánh bản sao cache cũng cấp lại exec bit trước
+  probe, và log từ chối probe giờ kèm chi tiết exception.
+
 ### Changed — notebook production chỉ còn code cell
 
 - **`notebooks/kaggle-production.ipynb` giờ chỉ gồm code cell:** toàn bộ 26

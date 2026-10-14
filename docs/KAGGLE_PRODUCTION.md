@@ -25,6 +25,8 @@ The requested model Context is 131,072 tokens. The server attempts that first wi
 
 Do not attach model weights to Kaggle. The server downloads exact files from immutable Hugging Face revisions and verifies size and SHA-256 before serving.
 
+The only dataset you may attach is the prebuilt llama.cpp runtime (`muse-glimmer-30b-dflash2-llama-runtime`, packaged by `./package-llama-runtime.sh`). When it is attached under Kaggle Input, setup reuses its manifest-verified binaries and never compiles in-session (`LLAMA_SOURCE_MODE=kaggle`); when it is absent or fails verification, setup fails loudly instead of building, so every run serves exactly the pinned runtime commit.
+
 | Asset | Repository | Revision | File | Expected bytes | SHA-256 |
 | --- | --- | --- | --- | ---: | --- |
 | Target | `bartowski/Muse-Glimmer-30B-GGUF` | `16f5840bef28e4018cf41a7ec9709d6fd89176f6` | `Muse-Glimmer-30B-Q4_K_M.gguf` | 17306324000 | `0d3fc85f61d10fdc84072f0bba6005d61c1ac5605a2627b0fd5ea4ff8194c384` |

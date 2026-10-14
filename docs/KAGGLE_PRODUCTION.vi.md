@@ -25,6 +25,8 @@ Context model được yêu cầu là 131.072 token. Server thử mức đó tr�
 
 Không attach model weights vào Kaggle. Server tải đúng file từ revision Hugging Face bất biến và xác minh dung lượng cùng SHA-256 trước khi serving.
 
+Dataset duy nhất bạn có thể attach là runtime llama.cpp dựng sẵn (`muse-glimmer-30b-dflash2-llama-runtime`, đóng gói bằng `./package-llama-runtime.sh`). Khi nó được attach dưới Kaggle Input, setup sẽ dùng lại binary đã xác minh manifest và không bao giờ compile trong phiên (`LLAMA_SOURCE_MODE=kaggle`); khi dataset vắng mặt hoặc fail xác minh, setup dừng ngay với lỗi rõ ràng thay vì build, nên mọi lần chạy phục vụ đúng commit runtime đã ghim.
+
 | Asset | Repository | Revision | File | Byte mong đợi | SHA-256 |
 | --- | --- | --- | --- | ---: | --- |
 | Target | `bartowski/Muse-Glimmer-30B-GGUF` | `16f5840bef28e4018cf41a7ec9709d6fd89176f6` | `Muse-Glimmer-30B-Q4_K_M.gguf` | 17306324000 | `0d3fc85f61d10fdc84072f0bba6005d61c1ac5605a2627b0fd5ea4ff8194c384` |
